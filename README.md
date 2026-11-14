@@ -1,40 +1,39 @@
 # TuneBloom-Py
 
-Réécriture **partielle** en Python pur (aucune dépendance, bibliothèque standard uniquement) de
-[TuneBloom](https://github.com/) pour les archives sonores Wii U **BFSAR**.
+A **partial** rewrite in pure Python (no dependencies, standard library only) of
+[TuneBloom](https://github.com/) for Wii U sound archives (**BFSAR**).
 
-## Ce qui fonctionne
-- Lecture du BFSAR : sons, banques, archives de vagues (BFWAR), groupes, players, table des fichiers, noms.
-- Extraction de tous les fichiers internes (`.bfstm`, `.bfwar`, `.bfseq`, `.bfbnk`, `.bfwsd`, `.bfgrp`…).
-- Décodage **BFSTM** et **BFWAV** (DSP-ADPCM, PCM16, PCM8) → WAV, et lecture dans l'interface.
-- **Remplacement** d'un fichier interne (le BFSAR est réécrit, offsets/tailles recalculés).
-- Interface Tkinter + ligne de commande.
+## What works
+- Reading BFSAR files: sounds, banks, wave archives (BFWAR), groups, players, file tables, and names.
+- Extracting all internal files (`.bfstm`, `.bfwar`, `.bfseq`, `.bfbnk`, `.bfwsd`, `.bfgrp`, etc.).
+- Decoding **BFSTM** and **BFWAV** (DSP-ADPCM, PCM16, PCM8) to WAV format, with playback in the interface.
+- **Replacing** internal files (the BFSAR is rewritten, with offsets and sizes recalculated).
+- Tkinter-based interface and command-line interface.
 
-## Ce qui n'est PAS (encore) porté
-Éditeur de séquences BFSEQ, éditeur de banques BFBNK, interprétation des BFWSD (wave sounds),
-lecture de séquences/synthèse, import WAV → BFSTM/BFWAV (encodeur DSP-ADPCM), édition des propriétés
-(volume, player, boucles…) et réécriture complète du BFSAR depuis zéro (table Patricia, etc.).
-Testé uniquement sur des fichiers synthétiques (`tests/`), pas sur de vrais BFSAR.
+## What has NOT (yet) been ported
+BFSEQ sequence editor, BFBNK bank editor, interpretation of BFWSD (wave sounds),
+sequence playback/synthesis, importing WAV files to BFSTM/BFWAV (DSP-ADPCM encoder), editing properties
+(volume, player, loops, etc.), and full BFSAR reconstruction from scratch (Patricia tree, etc.).
+Tested only on synthetic files (`tests/`), not on actual BFSAR files.
 
-## Utilisation (sans compiler)
-    python -m tunebloom                       # interface graphique
-    python -m tunebloom list    archive.bfsar
-    python -m tunebloom extract archive.bfsar sortie/ --wav
-    python -m tunebloom wav     son.bfstm son.wav
-    python -m tunebloom replace archive.bfsar 3 nouveau.bfstm -o archive_modifiee.bfsar
+## Usage (without compiling)
+python -m tunebloom                       # graphical interface
+python -m tunebloom list    archive.bfsar
+python -m tunebloom extract archive.bfsar output/ --wav
+python -m tunebloom wav     sound.bfstm sound.wav
+python -m tunebloom replace archive.bfsar 3 new.bfstm -o modified_archive.bfsar
 
-Python 3.9+ ; Tkinter requis pour l'interface (Linux : `sudo apt install python3-tk`).
-Lecture audio : Windows = `winsound`, macOS = `afplay`, Linux = `paplay`/`aplay`/`ffplay`.
+Requires Python 3.9+; Tkinter is needed for the interface (on Linux: `sudo apt install python3-tk`). Audio playback: Windows = `winsound`, macOS = `afplay`, Linux = `paplay`/`aplay`/`ffplay`.
 
-## Créer des exécutables
-### Via GitHub (recommandé : Windows, Linux, macOS Intel + ARM d'un coup)
-1. Créez un dépôt GitHub et poussez ce dossier (`git init && git add . && git commit -m init && git push`).
-2. Onglet **Actions** : le workflow *Build TuneBloom-Py* se lance seul (ou « Run workflow »).
-3. Téléchargez les exécutables dans *Artifacts* en bas de l'exécution.
-4. Pour publier une release : `git tag v0.1.0 && git push --tags` (zips attachés automatiquement).
+## Creating executables
+### Via GitHub (recommended: handles Windows, Linux, and macOS—Intel + ARM—all at once)
+1. Create a GitHub repository and push this folder (`git init && git add . && git commit -m init && git push`).
+2. Go to the **Actions** tab: the *Build TuneBloom-Py* workflow will start automatically (or click "Run workflow").
+3. Download the executables from the *Artifacts* section at the bottom of the workflow run.
+4. To publish a release: `git tag v0.1.0 && git push --tags` (ZIP files will be attached automatically).
 
-### En local (PyInstaller, ~10 Mo, pas de Visual Studio)
-    python -m pip install pyinstaller
-    pyinstaller --onefile --windowed --name TuneBloom-Py run_tunebloom.py
-Résultat dans `dist/`. PyInstaller ne fait pas de cross-compilation : un build par OS.
-macOS : au premier lancement, clic droit → Ouvrir (binaire non signé).
+### Locally (PyInstaller, ~10 MB, no Visual Studio required)
+python -m pip install pyinstaller
+pyinstaller --onefile --windowed --name TuneBloom-Py run_tunebloom.py
+The result will be in the `dist/` directory. PyInstaller does not support cross-compilation; you must build separately for each OS.
+macOS: Upon the first launch, right-click the file and select "Open" (as the binary is unsigned).
