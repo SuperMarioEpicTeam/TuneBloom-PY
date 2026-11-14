@@ -1,0 +1,250 @@
+"""Lecture / modification d'un BFSAR (Binary caFe Sound ARchive), port de snd_SoundArchiveFile.h."""
+import os
+from dataclasses import dataclass, field
+from typing import Optional
+
+from .binio import Reader, detect_endian, align
+
+# ElementType
+T_STRING_BLOCK, T_INFO_BLOCK, T_FILE_BLOCK = 0x2000, 0x2001, 0x2002
+T_SND_STRM, T_SND_WAVE, T_SND_SEQ = 0x2201, 0x2202, 0x2203
+T_FILE_INTERNAL, T_FILE_EXTERNAL = 0x220C, 0x220D
+
+ITEM_SOUND, ITEM_SOUNDGROUP, ITEM_BANK, ITEM_PLAYER, ITEM_WARC, ITEM_GROUP = 1, 2, 3, 4, 5, 6
+ITEM_NAMES = {1: "Sound", 2: "SoundGroup", 3: "Bank", 4: "Player", 5: "WaveArchive", 6: "Group"}
+SOUND_TYPE_NAMES = {T_SND_STRM: "Stream", T_SND_WAVE: "Wave", T_SND_SEQ: "Sequence"}
+MAGIC_EXT = {b"FSTM": ".bfstm", b"FWAV": ".bfwav", b"FWAR": ".bfwar", b"FSEQ": ".bfseq",
+             b"FBNK": ".bfbnk", b"FWSD": ".bfwsd", b"FGRP": ".bfgrp", b"FSTP": ".bfstp"}
+INVALID = 0xFFFFFFFF
+
+
+@dataclass
+class Item:
+    kind: int                      # ITEM_*
+    index: int
+    name: Optional[str]
+    file_id: int = INVALID
+    sound_type: int = 0            # T_SND_* pour les sons
+    extra: dict = field(default_factory=dict)
+
+    @property
+    def item_id(self):
+        return (self.kind << 24) | self.index
+
+    @property
+    def label(self):
+        return self.name or f"{ITEM_NAMES[self.kind]}_{self.index}"
+
+
+@dataclass
+class FileEntry:
+    index: int
+    internal: bool
+    offset: int = 0                # relatif au corps du bloc FILE
+    size: int = 0
+    path: str = ""                 # pour les fichiers externes
+    ref_addr: int = 0              # adresse (dans le BFSAR) de la ReferenceWithSize interne
+
+
+class BfsarError(Exception):
+    pass
+
+
+class Bfsar:
+    def __init__(self, data: bytes, path: Optional[str] = None):
+        if data[:4] != b"FSAR":
+            raise BfsarError("Signature FSAR absente : ce n'est pas un BFSAR")
+        self.data = bytearray(data)
+        self.path = path
+        self.endian = detect_endian(data)
+        self.r = Reader(self.data, self.endian)
+        self.version = self.r.u32(8)
+        self._parse()
+
+    # ---------- chargement ----------
+    @classmethod
+    def open(cls, path):
+        with open(path, "rb") as f:
+            return cls(f.read(), path)
+
+    def _parse(self):
+        r = self.r
+        self.blocks = {}
+        for i in range(r.u16(16)):
+            b = 0x14 + 12 * i
+            self.blocks[r.u16(b)] = dict(ref=b, off=r.s32(b + 4), size=r.u32(b + 8))
+        for need in (T_INFO_BLOCK, T_FILE_BLOCK):
+            if need not in self.blocks:
+                raise BfsarError("Bloc INFO ou FILE manquant")
+        self.strings = self._read_strings()
+        ib = self.blocks[T_INFO_BLOCK]["off"] + 8
+        tables = {}
+        for k, name in enumerate(("sound", "soundgroup", "bank", "warc", "group", "player", "file", "playerinfo")):
+            off = r.s32(ib + 8 * k + 4)
+            tables[name] = (ib + off) if off > 0 else None
+        self.tables = tables
+        self.sounds = self._read_items(ITEM_SOUND, "sound")
+        self.soundgroups = self._read_items(ITEM_SOUNDGROUP, "soundgroup")
+        self.banks = self._read_items(ITEM_BANK, "bank")
+        self.warcs = self._read_items(ITEM_WARC, "warc")
+        self.groups = self._read_items(ITEM_GROUP, "group")
+        self.players = self._read_items(ITEM_PLAYER, "player")
+        self.files = self._read_files()
+
+    def _read_strings(self):
+        blk = self.blocks.get(T_STRING_BLOCK)
+        if not blk:
+            return []
+        r = self.r
+        body = blk["off"] + 8
+        tbl = body + r.s32(body + 4)
+        out = []
+        for i in range(r.u32(tbl)):
+            off = r.s32(tbl + 4 + 12 * i + 4)
+            out.append(r.cstr(tbl + off))
+        return out
+
+    def _name(self, string_id):
+        if string_id is None or string_id == INVALID or string_id >= len(self.strings):
+            return None
+        return self.strings[string_id]
+
+    def _ref_table(self, name):
+        t = self.tables.get(name)
+        if t is None:
+            return []
+        r = self.r
+        return [t + r.s32(t + 4 + 8 * i + 4) for i in range(r.u32(t))]
+
+    def _read_items(self, kind, table):
+        r = self.r
+        items = []
+        for idx, a in enumerate(self._ref_table(table)):
+            it = Item(kind, idx, None)
+            if kind == ITEM_SOUND:
+                it.file_id = r.u32(a)
+                it.extra["player_id"] = r.u32(a + 4)
+                it.extra["volume"] = r.u8(a + 8)
+                it.sound_type = r.u16(a + 12)
+                detail = a + r.s32(a + 16)
+                it.name = self._name(r.bitflag(a + 20, 0))
+                if it.sound_type == T_SND_STRM:
+                    it.extra["channels"] = r.u16(detail + 2)
+                    it.extra["pitch"] = r.f32(detail + 12)
+                    ext_off = r.s32(detail + 28)
+                    if r.u16(detail + 24) == 0x2210 and ext_off != -1:
+                        ext = detail + ext_off
+                        it.extra["loop"] = (r.u32(ext) >> 8) & 0xFF == 1
+                        it.extra["loop_start"] = r.u32(ext + 4)
+                        it.extra["loop_end"] = r.u32(ext + 8)
+                elif it.sound_type == T_SND_WAVE:
+                    it.extra["wsd_index"] = r.u32(detail)
+                elif it.sound_type == T_SND_SEQ:
+                    tbl = detail + r.s32(detail + 4)
+                    it.extra["bank_ids"] = [r.u32(tbl + 4 + 4 * i) for i in range(r.u32(tbl))]
+            elif kind == ITEM_BANK:
+                it.file_id = r.u32(a)
+                it.name = self._name(r.bitflag(a + 12, 0))
+                tbl = a + r.s32(a + 8)
+                it.extra["warc_ids"] = [r.u32(tbl + 4 + 4 * i) for i in range(r.u32(tbl))]
+            elif kind == ITEM_WARC:
+                it.file_id = r.u32(a)
+                it.extra["load_individual"] = bool(r.u8(a + 4))
+                it.name = self._name(r.bitflag(a + 8, 0))
+                it.extra["wave_count"] = r.bitflag(a + 8, 1)
+            elif kind == ITEM_GROUP:
+                it.file_id = r.u32(a)
+                it.name = self._name(r.bitflag(a + 4, 0))
+            elif kind == ITEM_PLAYER:
+                it.extra["playable_sound_max"] = r.u32(a)
+                it.name = self._name(r.bitflag(a + 4, 0))
+            elif kind == ITEM_SOUNDGROUP:
+                it.extra["start_id"], it.extra["end_id"] = r.u32(a), r.u32(a + 4)
+                it.name = self._name(r.bitflag(a + 24, 0))
+            items.append(it)
+        return items
+
+    def _read_files(self):
+        r = self.r
+        files = []
+        for idx, a in enumerate(self._ref_table("file")):
+            typ = r.u16(a)
+            loc = a + r.s32(a + 4) if r.s32(a + 4) != -1 else None
+            if typ == T_FILE_INTERNAL and loc is not None:
+                files.append(FileEntry(idx, True, r.u32(loc + 4), r.u32(loc + 8), ref_addr=loc))
+            elif typ == T_FILE_EXTERNAL and loc is not None:
+                files.append(FileEntry(idx, False, path=r.cstr(loc)))
+            else:
+                files.append(FileEntry(idx, False))
+        return files
+
+    # ---------- accès aux fichiers ----------
+    def file_bytes(self, file_id) -> Optional[bytes]:
+        if file_id == INVALID or file_id >= len(self.files):
+            return None
+        fe = self.files[file_id]
+        if fe.internal:
+            if fe.offset == INVALID:
+                return None
+            start = self.blocks[T_FILE_BLOCK]["off"] + 8 + fe.offset
+            return bytes(self.data[start:start + fe.size])
+        if fe.path and self.path:
+            base = os.path.dirname(os.path.abspath(self.path))
+            for cand in (os.path.join(base, fe.path.replace("\\", "/")),
+                         os.path.join(base, os.path.basename(fe.path)),
+                         os.path.join(os.path.dirname(base), fe.path.replace("\\", "/"))):
+                if os.path.isfile(cand):
+                    with open(cand, "rb") as f:
+                        return f.read()
+        return None
+
+    @staticmethod
+    def extension_for(blob: bytes) -> str:
+        return MAGIC_EXT.get(bytes(blob[:4]), ".bin")
+
+    def all_items(self):
+        return (self.sounds + self.soundgroups + self.banks + self.warcs + self.groups + self.players)
+
+    # ---------- modification : remplacement d'un fichier interne ----------
+    def replace_file(self, file_id: int, new_data: bytes, alignment: int = 0x20):
+        """Remplace un fichier interne et décale tous les suivants. Le bloc FILE doit être le dernier du BFSAR."""
+        fe = self.files[file_id]
+        if not fe.internal or fe.offset == INVALID:
+            raise BfsarError("Ce fichier n'est pas interne au BFSAR (fichier externe) : remplacez-le directement sur le disque")
+        fb = self.blocks[T_FILE_BLOCK]
+        if any(b["off"] > fb["off"] for k, b in self.blocks.items() if k != T_FILE_BLOCK):
+            raise BfsarError("Le bloc FILE n'est pas le dernier du BFSAR : cas non géré")
+        body_start = fb["off"] + 8
+        body_len = fb["size"] - 8
+        internal = [f for f in self.files if f.internal and f.offset != INVALID]
+        old_off = fe.offset
+        later = sorted({f.offset for f in internal if f.offset > old_off})
+        old_end = later[0] if later else body_len
+        new_span = align(len(new_data), alignment)
+        delta = new_span - (old_end - old_off)
+
+        d = self.data
+        w = lambda o, v: d.__setitem__(slice(o, o + 4), v.to_bytes(4, "big" if self.endian == ">" else "little"))
+        # 1) mettre à jour les entrées FileInfo
+        for f in internal:
+            if f.offset == old_off:
+                w(f.ref_addr + 8, len(new_data))
+            elif f.offset > old_off:
+                w(f.ref_addr + 4, f.offset + delta)
+        # 2) reconstruire le corps du bloc FILE
+        body = bytes(d[body_start:body_start + body_len])
+        new_body = body[:old_off] + new_data + b"\x00" * (new_span - len(new_data)) + body[old_end:]
+        # 3) tailles : bloc FILE, entrée d'en-tête, taille du fichier
+        new_blk_size = fb["size"] + delta
+        w(fb["ref"] + 8, new_blk_size)
+        w(body_start - 4, new_blk_size)
+        tail = bytes(d[fb["off"] + fb["size"]:])
+        self.data = bytearray(bytes(d[:body_start]) + new_body + tail)
+        self.r = Reader(self.data, self.endian)
+        w2 = lambda o, v: self.data.__setitem__(slice(o, o + 4), v.to_bytes(4, "big" if self.endian == ">" else "little"))
+        w2(12, len(self.data))
+        self._parse()
+
+    def save(self, path):
+        with open(path, "wb") as f:
+            f.write(self.data)
