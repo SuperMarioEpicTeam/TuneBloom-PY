@@ -24,6 +24,7 @@ class App(tk.Tk):
         m = tk.Menu(self)
         fm = tk.Menu(m, tearoff=0)
         fm.add_command(label="Ouvrir un BFSAR…", command=self.ask_open)
+        fm.add_command(label="Ajouter un BFGRP externe…", command=self.add_grp)
         fm.add_command(label="Enregistrer sous…", command=self.save_as)
         fm.add_separator()
         fm.add_command(label="Quitter", command=self.destroy)
@@ -206,6 +207,23 @@ class App(tk.Tk):
             return
         self.status.config(text=f"Fichier #{fid} remplacé en mémoire — pensez à Enregistrer sous…")
         self.on_select(None)
+
+    def add_grp(self):
+        if not self.arc:
+            return
+        for p in filedialog.askopenfilenames(filetypes=[("Group file", "*.bfgrp"), ("Tous", "*.*")]):
+            try:
+                with open(p, "rb") as f:
+                    n = self.arc.attach_group(f.read())
+                self.status.config(text=f"{os.path.basename(p)} : {n} fichiers fournis")
+            except Exception as e:
+                messagebox.showerror("BFGRP", str(e))
+        self.load_keep()
+
+    def load_keep(self):
+        ext = dict(self.arc.external)
+        self.load(self.arc.path)
+        self.arc.external = ext
 
     def save_as(self):
         if not self.arc:

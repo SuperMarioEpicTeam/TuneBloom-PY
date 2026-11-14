@@ -9,8 +9,16 @@ def safe(name):
     return re.sub(r'[\\/:*?"<>|]', "_", name)
 
 
-def cmd_list(a):
+def _open(a):
     arc = Bfsar.open(a.bfsar)
+    for g in getattr(a, "grp", None) or []:
+        with open(g, "rb") as f:
+            print(f"{g} : {arc.attach_group(f.read())} fichiers")
+    return arc
+
+
+def cmd_list(a):
+    arc = _open(a)
     print(f"BFSAR version 0x{arc.version:08X}, {'big' if arc.endian == '>' else 'little'} endian, {len(arc.files)} fichiers")
     for it in arc.all_items():
         extra = SOUND_TYPE_NAMES.get(it.sound_type, "") if it.kind == 1 else ""
@@ -19,7 +27,7 @@ def cmd_list(a):
 
 
 def cmd_extract(a):
-    arc = Bfsar.open(a.bfsar)
+    arc = _open(a)
     os.makedirs(a.out, exist_ok=True)
     names = {}
     for it in arc.all_items():
@@ -74,9 +82,10 @@ def cmd_gui(a):
 def main(argv=None):
     p = argparse.ArgumentParser(prog="tunebloom", description="TuneBloom-Py : outil BFSAR (Wii U) en Python")
     sub = p.add_subparsers(dest="cmd")
-    s = sub.add_parser("list", help="lister le contenu"); s.add_argument("bfsar"); s.set_defaults(f=cmd_list)
+    GRP = dict(nargs="*", metavar="BFGRP", help="BFGRP externes à charger (jeux comme SM3DW)")
+    s = sub.add_parser("list", help="lister le contenu"); s.add_argument("bfsar"); s.add_argument("--grp", **GRP); s.set_defaults(f=cmd_list)
     s = sub.add_parser("extract", help="extraire tous les fichiers internes")
-    s.add_argument("bfsar"); s.add_argument("out"); s.add_argument("--wav", action="store_true", help="convertir aussi en WAV")
+    s.add_argument("bfsar"); s.add_argument("out"); s.add_argument("--wav", action="store_true", help="convertir aussi en WAV"); s.add_argument("--grp", **GRP)
     s.set_defaults(f=cmd_extract)
     s = sub.add_parser("wav", help="convertir un .bfstm/.bfwav en .wav"); s.add_argument("file"); s.add_argument("out")
     s.set_defaults(f=cmd_wav)

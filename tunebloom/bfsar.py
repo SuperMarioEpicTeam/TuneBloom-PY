@@ -50,12 +50,33 @@ class BfsarError(Exception):
     pass
 
 
+def read_bfgrp(data: bytes) -> dict:
+    """BFGRP -> {fileId du BFSAR: bytes}. Les entrées « lien » (offset = -1) sont ignorées."""
+    if data[:4] != b"FGRP":
+        raise BfsarError("Pas un BFGRP")
+    r = Reader(data, detect_endian(data))
+    blocks = {}
+    for i in range(r.u16(16)):
+        b = 0x14 + 12 * i
+        blocks[r.u16(b)] = r.s32(b + 4)
+    info = blocks[0x7800] + 8
+    fbody = blocks[0x7801] + 8
+    out = {}
+    for i in range(r.u32(info)):
+        a = info + r.s32(info + 4 + 8 * i + 4)
+        file_id, off, size = r.u32(a), r.u32(a + 8), r.u32(a + 12)
+        if off != INVALID:
+            out[file_id] = bytes(data[fbody + off:fbody + off + size])
+    return out
+
+
 class Bfsar:
     def __init__(self, data: bytes, path: Optional[str] = None):
         if data[:4] != b"FSAR":
             raise BfsarError("Signature FSAR absente : ce n'est pas un BFSAR")
         self.data = bytearray(data)
         self.path = path
+        self.external = {}          # file_id -> bytes, alimenté par les BFGRP chargés
         self.endian = detect_endian(data)
         self.r = Reader(self.data, self.endian)
         self.version = self.r.u32(8)
@@ -183,6 +204,8 @@ class Bfsar:
         if file_id == INVALID or file_id >= len(self.files):
             return None
         fe = self.files[file_id]
+        if file_id in self.external:
+            return self.external[file_id]
         if fe.internal:
             if fe.offset == INVALID:
                 return None
@@ -197,6 +220,12 @@ class Bfsar:
                     with open(cand, "rb") as f:
                         return f.read()
         return None
+
+    def attach_group(self, grp_data: bytes) -> int:
+        """Charge un BFGRP externe : fournit les fichiers dont le BFSAR ne contient pas les données. Renvoie le nombre de fichiers."""
+        files = read_bfgrp(grp_data)
+        self.external.update(files)
+        return len(files)
 
     @staticmethod
     def extension_for(blob: bytes) -> str:

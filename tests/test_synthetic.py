@@ -53,6 +53,10 @@ arc2 = Bfsar(bytes(arc.data))
 assert arc2.file_bytes(0) == bigger and arc2.file_bytes(1) == war
 assert formats.decode_bfstm(arc2.file_bytes(0)).frames == 140
 
+arc3 = Bfsar(synth.bfsar([stm, war], ["A", "B"]))
+grp = synth.bfgrp([(1, synth.bfwar([wav])), (0, stm)])
+assert arc3.attach_group(grp) == 2 and arc3.file_bytes(1)[:4] == b"FWAR" and arc3.file_bytes(0) == stm
+
 with tempfile.TemporaryDirectory() as t:
     p = os.path.join(t, "x.wav")
     write_wav(a, p)

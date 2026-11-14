@@ -157,3 +157,23 @@ def bfsar(files, names):
               P("HHiI", 0x2002, 0, f_off, len(fblock))
     header += b"\x00" * (hdr_len - len(header))
     return header + sblock + iblock + fblock
+
+
+def bfgrp(entries):
+    """entries : liste de (fileId, bytes)."""
+    blob, items, off = b"", [], 0
+    for fid, d in entries:
+        d2 = d + b"\x00" * ((-len(d)) % 0x20)
+        items.append(P("IHHiI", fid, 0x1F00, 0, off, len(d)))
+        blob += d2
+        off += len(d2)
+    n = len(items)
+    tbl = P("I", n) + b"".join(P("HHi", 0x7900, 0, 4 + 8 * n + 16 * i) for i in range(n)) + b"".join(items)
+    info = b"INFO" + P("I", 8 + len(tbl)) + tbl
+    info += b"\x00" * ((-len(info)) % 0x20)
+    fileb = b"FILE" + P("I", 8 + len(blob)) + blob
+    hdr_len = 0x40
+    header = b"FGRP" + P("HHIIHH", 0xFEFF, hdr_len, 0x00010000, hdr_len + len(info) + len(fileb), 2, 0)
+    header += P("HHiI", 0x7800, 0, hdr_len, len(info)) + P("HHiI", 0x7801, 0, hdr_len + len(info), len(fileb))
+    header += b"\x00" * (hdr_len - len(header))
+    return header + info + fileb
