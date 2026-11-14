@@ -117,6 +117,12 @@ class App(tk.Tk):
         if n["kind"] == "file":
             return self.arc.file_bytes(n["file_id"]), f"file_{n['file_id']}"
         it = n["item"]
+        if it.kind == 1 and it.sound_type == 0x2202:          # son Wave : BFWSD -> BFWAR -> BFWAV
+            try:
+                return self.arc.wave_blobs_for_sound(it)[0], it.label
+            except Exception as e:
+                self._why = str(e)
+                return None, it.label
         return self.arc.file_bytes(it.file_id), it.label
 
     def on_select(self, _):
@@ -133,8 +139,10 @@ class App(tk.Tk):
                 lines.append(f"Fichier : #{it.file_id}")
             for k, v in it.extra.items():
                 lines.append(f"{k} : {v}")
-            if it.kind == 1 and it.sound_type == 0x2202:
-                lines.append("\n(Wave sound : le BFWSD n'est pas encore interprété ; utilisez l'archive de vagues correspondante.)")
+            if it.kind == 1 and it.sound_type == 0x2202 and not blob:
+                lines.append(f"\n{getattr(self, '_why', 'Données indisponibles')}")
+            if it.kind == 1 and it.sound_type == 0x2203:
+                lines.append("\n(Séquence : le séquenceur BFSEQ/BFBNK n'est pas encore porté ; export brut possible.)")
         elif n and n["kind"] == "file":
             fe = self.arc.files[n["file_id"]]
             lines.append(f"Fichier #{fe.index} — {'interne' if fe.internal else 'externe'}")
@@ -149,7 +157,8 @@ class App(tk.Tk):
         self.btn_play.config(state="normal" if is_audio else "disabled")
         self.btn_wav.config(state="normal" if is_audio else "disabled")
         self.btn_raw.config(state="normal" if blob else "disabled")
-        replaceable = bool(n) and (n["kind"] == "file" or (n["kind"] == "item" and n["item"].file_id != INVALID))
+        replaceable = bool(n) and (n["kind"] == "file" or (n["kind"] == "item" and n["item"].file_id != INVALID
+                                                           and not (n["item"].kind == 1 and n["item"].sound_type == 0x2202)))
         self.btn_rep.config(state="normal" if replaceable else "disabled")
 
     def _set_info(self, text):

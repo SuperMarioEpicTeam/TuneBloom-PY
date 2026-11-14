@@ -59,6 +59,34 @@ def cmd_extract(a):
     print(f"{n} fichiers extraits dans {a.out} ({skipped} ignorés : externes introuvables)")
 
 
+def cmd_sounds(a):
+    """Exporte en WAV tous les sons de type Wave (et streams disponibles), nommés comme dans le BFSAR."""
+    arc = _open(a)
+    os.makedirs(a.out, exist_ok=True)
+    ok = fail = seq = 0
+    for s in arc.sounds:
+        try:
+            if s.sound_type == 0x2202:
+                blobs = arc.wave_blobs_for_sound(s)
+                for k, b in enumerate(blobs):
+                    suffix = "" if len(blobs) == 1 else f"_{k}"
+                    write_wav(formats.decode_bfwav(b), os.path.join(a.out, safe(s.label) + suffix + ".wav"))
+            elif s.sound_type == 0x2201:
+                b = arc.file_bytes(s.file_id)
+                if b is None:
+                    raise ValueError("stream externe introuvable")
+                write_wav(formats.decode_bfstm(b), os.path.join(a.out, safe(s.label) + ".wav"))
+            else:
+                seq += 1
+                continue
+            ok += 1
+        except Exception as e:
+            fail += 1
+            if a.verbose:
+                print(f"  ! {s.label}: {e}")
+    print(f"{ok} sons exportés, {fail} indisponibles (données manquantes), {seq} séquences (lecture pas encore portée)")
+
+
 def cmd_wav(a):
     with open(a.file, "rb") as f:
         audio = formats.decode_any(f.read())
@@ -87,6 +115,9 @@ def main(argv=None):
     s = sub.add_parser("extract", help="extraire tous les fichiers internes")
     s.add_argument("bfsar"); s.add_argument("out"); s.add_argument("--wav", action="store_true", help="convertir aussi en WAV"); s.add_argument("--grp", **GRP)
     s.set_defaults(f=cmd_extract)
+    s = sub.add_parser("sounds", help="exporter les sons Wave/Stream en WAV, par nom")
+    s.add_argument("bfsar"); s.add_argument("out"); s.add_argument("--grp", **GRP); s.add_argument("-v", "--verbose", action="store_true")
+    s.set_defaults(f=cmd_sounds)
     s = sub.add_parser("wav", help="convertir un .bfstm/.bfwav en .wav"); s.add_argument("file"); s.add_argument("out")
     s.set_defaults(f=cmd_wav)
     s = sub.add_parser("replace", help="remplacer un fichier interne (par index) et sauvegarder")

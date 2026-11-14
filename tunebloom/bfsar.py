@@ -54,6 +54,7 @@ def read_bfgrp(data: bytes) -> dict:
     """BFGRP -> {fileId du BFSAR: bytes}. Les entrées « lien » (offset = -1) sont ignorées."""
     if data[:4] != b"FGRP":
         raise BfsarError("Pas un BFGRP")
+    data = memoryview(data)
     r = Reader(data, detect_endian(data))
     blocks = {}
     for i in range(r.u16(16)):
@@ -66,7 +67,7 @@ def read_bfgrp(data: bytes) -> dict:
         a = info + r.s32(info + 4 + 8 * i + 4)
         file_id, off, size = r.u32(a), r.u32(a + 8), r.u32(a + 12)
         if off != INVALID:
-            out[file_id] = bytes(data[fbody + off:fbody + off + size])
+            out[file_id] = data[fbody + off:fbody + off + size]
     return out
 
 
@@ -76,7 +77,9 @@ class Bfsar:
             raise BfsarError("Signature FSAR absente : ce n'est pas un BFSAR")
         self.data = bytearray(data)
         self.path = path
-        self.external = {}          # file_id -> bytes, alimenté par les BFGRP chargés
+        self.external = {}          # file_id -> données, alimenté par les BFGRP chargés
+        self._internal_groups_done = False
+        self._warc_cache = {}
         self.endian = detect_endian(data)
         self.r = Reader(self.data, self.endian)
         self.version = self.r.u32(8)
@@ -206,6 +209,10 @@ class Bfsar:
         fe = self.files[file_id]
         if file_id in self.external:
             return self.external[file_id]
+        if fe.internal and fe.offset == INVALID and not self._internal_groups_done:
+            self._attach_internal_groups()
+            if file_id in self.external:
+                return self.external[file_id]
         if fe.internal:
             if fe.offset == INVALID:
                 return None
@@ -220,6 +227,44 @@ class Bfsar:
                     with open(cand, "rb") as f:
                         return f.read()
         return None
+
+    def _attach_internal_groups(self):
+        """Les BFGRP stockés dans le BFSAR (ex. NSMBU) fournissent les fichiers dont l'offset est invalide."""
+        self._internal_groups_done = True
+        for g in self.groups:
+            if g.file_id != INVALID and g.file_id < len(self.files) and self.files[g.file_id].internal \
+                    and self.files[g.file_id].offset != INVALID:
+                blob = self.file_bytes(g.file_id)
+                if blob and bytes(blob[:4]) == b"FGRP":
+                    try:
+                        for fid, v in read_bfgrp(blob).items():
+                            self.external.setdefault(fid, v)
+                    except Exception:
+                        pass
+
+    def wave_blobs_for_sound(self, sound):
+        """Pour un son de type Wave : liste des BFWAV (un par « note »), résolus via BFWSD -> BFWAR."""
+        from .wsd import read_bfwsd
+        from .formats import split_bfwar
+        wsd = self.file_bytes(sound.file_id)
+        if not wsd:
+            raise BfsarError("BFWSD indisponible (fournissez le BFGRP correspondant)")
+        wave_ids, sounds = read_bfwsd(wsd)
+        idx = sound.extra.get("wsd_index", 0)
+        out = []
+        for wid_index in sounds[idx]:
+            warc_id, wave_index = wave_ids[wid_index]
+            warc = self.warcs[warc_id & 0xFFFFFF]
+            if warc.file_id not in self._warc_cache:
+                blob = self.file_bytes(warc.file_id)
+                if not blob:
+                    raise BfsarError(f"Archive de vagues {warc.label} indisponible (BFGRP manquant)")
+                self._warc_cache[warc.file_id] = split_bfwar(blob)
+            waves = self._warc_cache[warc.file_id]
+            if wave_index >= len(waves) or waves[wave_index] is None:
+                raise BfsarError(f"Vague {wave_index} absente de {warc.label}")
+            out.append(waves[wave_index])
+        return out
 
     def attach_group(self, grp_data: bytes) -> int:
         """Charge un BFGRP externe : fournit les fichiers dont le BFSAR ne contient pas les données. Renvoie le nombre de fichiers."""

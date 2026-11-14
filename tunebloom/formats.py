@@ -113,7 +113,7 @@ def decode_bfwav(data: bytes) -> Audio:
     rate = r.u32(ib + 4)
     loop_start = r.u32(ib + 8)
     loop_end = r.u32(ib + 12)               # = nombre d'échantillons
-    tbl = ib + (20 if version >= 0x00010200 else 16)
+    tbl = ib + 20                           # la table suit toujours originalLoopStart (seule sa valeur dépend de la version)
     nch = r.u32(tbl)
     chans = []
     for c in range(nch):
