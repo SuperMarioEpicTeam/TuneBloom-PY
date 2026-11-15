@@ -12,7 +12,7 @@ def write_wav(audio, path, channels=None):
         inter[i::n] = c[:frames]
     if sys.byteorder == "big":
         inter.byteswap()
-    with wave.open(str(path), "wb") as w:
+    with wave.open(path if hasattr(path, "write") else str(path), "wb") as w:
         w.setnchannels(n)
         w.setsampwidth(2)
         w.setframerate(audio.sample_rate)

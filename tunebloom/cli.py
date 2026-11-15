@@ -102,9 +102,29 @@ def cmd_replace(a):
     print(f"Fichier #{a.file_id} remplacé -> {a.out}")
 
 
+def cmd_replace_wave(a):
+    from .wavio import wav_to_bfwav
+    arc = _open(a)
+    matches = [x for x in arc.sounds if x.sound_type == 0x2202 and x.label == a.sound]
+    if not matches:
+        sys.exit(f"Son Wave introuvable : {a.sound}")
+    bf = wav_to_bfwav(a.wav, a.enc, a.loop_start)
+    arc.replace_wave(matches[0], bf)
+    arc.save(a.out)
+    print(f"{a.sound} remplacé ({len(bf)} octets de BFWAV, {a.enc}) -> {a.out}")
+
+
+def cmd_wav2bfwav(a):
+    from .wavio import wav_to_bfwav
+    bf = wav_to_bfwav(a.wav, a.enc, a.loop_start)
+    with open(a.out, "wb") as f:
+        f.write(bf)
+    print(f"{a.out} : {len(bf)} octets ({a.enc})")
+
+
 def cmd_gui(a):
-    from .gui import main
-    main(a.bfsar)
+    from .server import main
+    main(a.bfsar, port=getattr(a, "port", 0) or 0)
 
 
 def main(argv=None):
@@ -118,12 +138,19 @@ def main(argv=None):
     s = sub.add_parser("sounds", help="exporter les sons Wave/Stream en WAV, par nom")
     s.add_argument("bfsar"); s.add_argument("out"); s.add_argument("--grp", **GRP); s.add_argument("-v", "--verbose", action="store_true")
     s.set_defaults(f=cmd_sounds)
+    s = sub.add_parser("wav2bfwav", help="convertir un WAV en BFWAV (encodeur DSP-ADPCM identique au C++)")
+    s.add_argument("wav"); s.add_argument("out"); s.add_argument("--enc", choices=["pcm8", "pcm16", "dspadpcm"], default="dspadpcm")
+    s.add_argument("--loop-start", type=int, default=None); s.set_defaults(f=cmd_wav2bfwav)
+    s = sub.add_parser("replace-wave", help="remplacer l'audio d'un son Wave par un WAV")
+    s.add_argument("bfsar"); s.add_argument("sound"); s.add_argument("wav"); s.add_argument("-o", "--out", required=True)
+    s.add_argument("--enc", choices=["pcm8", "pcm16", "dspadpcm"], default="dspadpcm"); s.add_argument("--loop-start", type=int, default=None)
+    s.add_argument("--grp", **GRP); s.set_defaults(f=cmd_replace_wave)
     s = sub.add_parser("wav", help="convertir un .bfstm/.bfwav en .wav"); s.add_argument("file"); s.add_argument("out")
     s.set_defaults(f=cmd_wav)
     s = sub.add_parser("replace", help="remplacer un fichier interne (par index) et sauvegarder")
     s.add_argument("bfsar"); s.add_argument("file_id", type=int); s.add_argument("new"); s.add_argument("-o", "--out", required=True)
     s.set_defaults(f=cmd_replace)
-    s = sub.add_parser("gui", help="interface graphique (par défaut)"); s.add_argument("bfsar", nargs="?"); s.set_defaults(f=cmd_gui)
+    s = sub.add_parser("gui", help="interface graphique (par défaut)"); s.add_argument("bfsar", nargs="?"); s.add_argument("--port", type=int, default=0); s.set_defaults(f=cmd_gui)
     a = p.parse_args(argv)
     if not a.cmd:
         return cmd_gui(argparse.Namespace(bfsar=None))

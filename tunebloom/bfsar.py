@@ -80,6 +80,7 @@ class Bfsar:
         self.external = {}          # file_id -> données, alimenté par les BFGRP chargés
         self._internal_groups_done = False
         self._warc_cache = {}
+        self._file_group = {}       # fileId -> fileId du BFGRP interne qui le contient
         self.endian = detect_endian(data)
         self.r = Reader(self.data, self.endian)
         self.version = self.r.u32(8)
@@ -166,6 +167,7 @@ class Bfsar:
                 elif it.sound_type == T_SND_SEQ:
                     tbl = detail + r.s32(detail + 4)
                     it.extra["bank_ids"] = [r.u32(tbl + 4 + 4 * i) for i in range(r.u32(tbl))]
+                    it.extra["start_offset"] = r.bitflag(detail + 12, 0)
             elif kind == ITEM_BANK:
                 it.file_id = r.u32(a)
                 it.name = self._name(r.bitflag(a + 12, 0))
@@ -185,6 +187,11 @@ class Bfsar:
             elif kind == ITEM_SOUNDGROUP:
                 it.extra["start_id"], it.extra["end_id"] = r.u32(a), r.u32(a + 4)
                 it.name = self._name(r.bitflag(a + 24, 0))
+                it.extra["wave"] = r.u16(a + 16) == 0x2205
+                if it.extra["wave"]:
+                    det = a + r.s32(a + 20)
+                    t = det + r.s32(det + 4)
+                    it.extra["warc_ids"] = [r.u32(t + 4 + 4 * i) for i in range(r.u32(t))]
             items.append(it)
         return items
 
@@ -239,6 +246,7 @@ class Bfsar:
                     try:
                         for fid, v in read_bfgrp(blob).items():
                             self.external.setdefault(fid, v)
+                            self._file_group.setdefault(fid, g.file_id)
                     except Exception:
                         pass
 
@@ -265,6 +273,35 @@ class Bfsar:
                 raise BfsarError(f"Vague {wave_index} absente de {warc.label}")
             out.append(waves[wave_index])
         return out
+
+    def wave_location(self, sound):
+        """(warc, index_vague) de la première note d'un son Wave."""
+        from .wsd import read_bfwsd
+        wsd = self.file_bytes(sound.file_id)
+        if not wsd:
+            raise BfsarError("BFWSD indisponible")
+        wave_ids, sounds = read_bfwsd(wsd)
+        warc_id, wave_index = wave_ids[sounds[sound.extra.get("wsd_index", 0)][0]]
+        return self.warcs[warc_id & 0xFFFFFF], wave_index
+
+    def replace_wave(self, sound, new_bfwav: bytes):
+        """Remplace la vague d'un son Wave : reconstruit le BFWAR (et le BFGRP interne si besoin) puis le BFSAR."""
+        from .bfwar import rebuild_bfwar, rebuild_bfgrp
+        warc, idx = self.wave_location(sound)
+        old = self.file_bytes(warc.file_id)
+        if old is None:
+            raise BfsarError("Archive de vagues indisponible")
+        new_warc = rebuild_bfwar(old, {idx: new_bfwav})
+        fe = self.files[warc.file_id]
+        if fe.internal and fe.offset != INVALID:
+            self.replace_file(warc.file_id, new_warc)
+            return
+        self.file_bytes(warc.file_id)                      # force le chargement des groupes internes
+        gid = self._file_group.get(warc.file_id)
+        if gid is None:
+            raise BfsarError("Cette archive de vagues est dans un BFGRP externe : modifiez le .bfgrp (commande replace-in-grp)")
+        new_grp = rebuild_bfgrp(self.file_bytes(gid), {warc.file_id: new_warc})
+        self.replace_file(gid, new_grp)
 
     def attach_group(self, grp_data: bytes) -> int:
         """Charge un BFGRP externe : fournit les fichiers dont le BFSAR ne contient pas les données. Renvoie le nombre de fichiers."""
@@ -317,6 +354,7 @@ class Bfsar:
         self.r = Reader(self.data, self.endian)
         w2 = lambda o, v: self.data.__setitem__(slice(o, o + 4), v.to_bytes(4, "big" if self.endian == ">" else "little"))
         w2(12, len(self.data))
+        self.external, self._warc_cache, self._file_group, self._internal_groups_done = {}, {}, {}, False
         self._parse()
 
     def save(self, path):

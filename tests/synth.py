@@ -65,12 +65,11 @@ def bfwav(frames_data: bytes, nsamples: int, rate=22050, enc=2):
 
 def bfwar(waves):
     n = len(waves)
-    off, entries, blob = 0, b"", b""
+    off, entries, blob = 0x18, b"", b"\x00" * 0x18
     for w in waves:
-        w2 = w + b"\x00" * ((-len(w)) % 0x20)
         entries += P("HHiI", 0x1F00, 0, off, len(w))
-        blob += w2
-        off += len(w2)
+        blob += w + b"\x00" * ((-(8 + off + len(w))) % 0x20)
+        off += len(w) + (-(8 + off + len(w))) % 0x20
     info_body = P("I", n) + entries
     info = b"INFO" + P("I", 8 + len(info_body)) + info_body
     info += b"\x00" * ((-len(info)) % 0x20)
@@ -161,12 +160,12 @@ def bfsar(files, names):
 
 def bfgrp(entries):
     """entries : liste de (fileId, bytes)."""
-    blob, items, off = b"", [], 0
+    blob, items, off = b"\x00" * 0x18, [], 0x18
     for fid, d in entries:
-        d2 = d + b"\x00" * ((-len(d)) % 0x20)
+        pad = (-(8 + off + len(d))) % 0x20
         items.append(P("IHHiI", fid, 0x1F00, 0, off, len(d)))
-        blob += d2
-        off += len(d2)
+        blob += d + b"\x00" * pad
+        off += len(d) + pad
     n = len(items)
     tbl = P("I", n) + b"".join(P("HHi", 0x7900, 0, 4 + 8 * n + 16 * i) for i in range(n)) + b"".join(items)
     info = b"INFO" + P("I", 8 + len(tbl)) + tbl

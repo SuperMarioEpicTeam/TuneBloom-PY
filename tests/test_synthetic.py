@@ -63,3 +63,42 @@ with tempfile.TemporaryDirectory() as t:
     with wave.open(p) as w:
         assert w.getnframes() == 28 and w.getframerate() == 32000
 print("OK : tous les tests synthétiques passent")
+
+# ---- import WAV, reconstruction BFWAR/BFGRP, remplacement de son ----
+import math
+from tunebloom.wavio import wav_to_bfwav
+from tunebloom.bfwar import rebuild_bfwar, rebuild_bfgrp
+with tempfile.TemporaryDirectory() as t:
+    p = os.path.join(t, "s.wav")
+    w = wave.open(p, "wb"); w.setnchannels(1); w.setsampwidth(2); w.setframerate(22050)
+    sine = [int(9000 * math.sin(i / 7)) for i in range(5000)]
+    w.writeframes(struct.pack("<5000h", *sine)); w.close()
+    pcm = formats.decode_bfwav(wav_to_bfwav(p, "pcm16"))
+    assert list(pcm.channels[0]) == sine and pcm.sample_rate == 22050
+    adp = formats.decode_bfwav(wav_to_bfwav(p, "dspadpcm", loop_start=100))
+    sig = sum(x * x for x in sine); err = sum((x - y) ** 2 for x, y in zip(sine, adp.channels[0]))
+    assert 10 * math.log10(sig / max(err, 1)) > 20 and adp.loop and adp.loop_start == 100
+
+war2 = synth.bfwar([wav, wav, wav])
+assert rebuild_bfwar(war2, {}) == war2                       # reconstruction identique
+newwav = wav_to_bfwav.__globals__["build_bfwav"]([sine], 22050, 1)
+r = formats.split_bfwar(rebuild_bfwar(war2, {1: newwav}))
+assert bytes(r[1]) == newwav and bytes(r[0]) == wav and bytes(r[2]) == wav
+grp2 = synth.bfgrp([(0, stm), (1, war2)])
+assert rebuild_bfgrp(grp2, {}) == grp2
+from tunebloom.bfsar import read_bfgrp
+g3 = read_bfgrp(rebuild_bfgrp(grp2, {1: war2 + b"\x00" * 64}))
+assert bytes(g3[0]) == stm and len(g3[1]) == len(war2) + 64
+print("OK : import WAV / BFWAR / BFGRP")
+
+# ---- WAV en mémoire, désassembleur MML ----
+import io
+from tunebloom.mml import decode, note_name
+bio = io.BytesIO(); write_wav(a, bio)
+assert bio.getvalue()[:4] == b"RIFF" and len(bio.getvalue()) > 44
+assert note_name(60) == "cn4" and note_name(0) == "cnm1" and note_name(66) == "fs4"
+assert decode(bytes([0x3c, 0x7f, 0x06]), 0)[:2] == ("cn4 127, 6", 3)
+assert decode(bytes([0x80, 0x03]), 0)[0] == "wait 3"
+assert decode(bytes([0xc1, 0x64]), 0)[0] == "volume 100"
+assert decode(bytes([0x89, 0x00, 0x00, 0x10]), 0)[2] == 0x10
+print("OK : WAV mémoire / MML")
