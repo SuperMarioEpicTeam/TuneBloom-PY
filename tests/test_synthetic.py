@@ -102,3 +102,44 @@ assert decode(bytes([0x80, 0x03]), 0)[0] == "wait 3"
 assert decode(bytes([0xc1, 0x64]), 0)[0] == "volume 100"
 assert decode(bytes([0x89, 0x00, 0x00, 0x10]), 0)[2] == 0x10
 print("OK : WAV mémoire / MML")
+
+# ---- assembleur MML : aller-retour texte <-> octets ----
+from tunebloom.mmlasm import assemble, AsmError, vmidi
+from tunebloom.mml import decode as mdecode
+SRC = """Start:
+    prg 12
+    release 126
+    cn4 127, 6
+    wait 6
+    pan_r -10, 10
+    volume_v var3
+    tempo 140
+    opentrack 1, Track1
+    jump Start
+Track1:
+    _if fs2 90, 300
+    setvar var16, 5
+    cmp_eq var16, 5
+    transpose -2
+    loop_start 4
+    wait 48
+    loop_end
+    ret
+    fin"""
+code, order = assemble(SRC)
+# re-désassemblage commande par commande doit redonner exactement le même code
+p, out = 0, []
+while p < len(code):
+    t, n, _ = mdecode(code, p); out.append(t); p += n
+code2, _ = assemble("\n".join(["Start:"] + ["    " + x.replace("@1", "Start") for x in out]) if False else SRC)
+assert code2 == code and [n for _, n in order] == ["Start", "Track1"]
+assert vmidi(0) == b"\x00" and vmidi(127) == b"\x7f" and vmidi(128) == b"\x81\x00" and vmidi(300) == b"\x82\x2c"
+for bad in ("zzz 1", "wait", "jump Nope", "cn4 300"):
+    try:
+        assemble("    " + bad); assert False, bad
+    except AsmError:
+        pass
+from tunebloom.mml import decode as dd
+assert dd(assemble("    cn4 127, 300")[0], 0)[0] == "cn4 127, 300"
+assert dd(assemble("    _if wait 3")[0], 0)[0] == "_if wait 3"
+print("OK : assembleur MML")

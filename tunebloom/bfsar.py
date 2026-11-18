@@ -1,5 +1,6 @@
 """Lecture / modification d'un BFSAR (Binary caFe Sound ARchive), port de snd_SoundArchiveFile.h."""
 import os
+import struct
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -292,16 +293,64 @@ class Bfsar:
         if old is None:
             raise BfsarError("Archive de vagues indisponible")
         new_warc = rebuild_bfwar(old, {idx: new_bfwav})
-        fe = self.files[warc.file_id]
-        if fe.internal and fe.offset != INVALID:
-            self.replace_file(warc.file_id, new_warc)
+        self.replace_any_file(warc.file_id, new_warc)
+
+    def _locate_in_group(self, gid, fid):
+        """Offset absolu (dans self.data) du fichier fid stocké dans le BFGRP interne gid, ou None."""
+        gfe = self.files[gid]
+        gstart = self.blocks[T_FILE_BLOCK]["off"] + 8 + gfe.offset
+        g = self.data
+        e = self.endian
+        u32 = lambda o: struct.unpack_from(e + "I", g, gstart + o)[0]
+        s32 = lambda o: struct.unpack_from(e + "i", g, gstart + o)[0]
+        u16 = lambda o: struct.unpack_from(e + "H", g, gstart + o)[0]
+        info = fbody = None
+        for i in range(u16(16)):
+            t = u16(0x14 + 12 * i)
+            if t == 0x7800: info = u32(0x14 + 12 * i + 4) + 8
+            if t == 0x7801: fbody = u32(0x14 + 12 * i + 4) + 8
+        for i in range(u32(info)):
+            a = info + s32(info + 4 + 8 * i + 4)
+            if u32(a) == fid:
+                off, size = u32(a + 8), u32(a + 12)
+                return None if off == INVALID else (gstart + fbody + off, size)
+        return None
+
+    def replace_any_file(self, fid: int, data: bytes):
+        """Remplace un fichier où qu'il soit : direct dans le BFSAR, ou dans un BFGRP interne (reconstruit).
+        Chemin rapide : si la taille est identique, les octets sont écrits sur place (sans reconstruire l'archive)."""
+        from .bfwar import rebuild_bfgrp
+        fe = self.files[fid]
+        if fe.internal and fe.offset != INVALID and fe.size == len(data):
+            start = self.blocks[T_FILE_BLOCK]["off"] + 8 + fe.offset
+            self.data[start:start + len(data)] = data
+            self.external, self._warc_cache, self._file_group, self._internal_groups_done = {}, {}, {}, False
             return
-        self.file_bytes(warc.file_id)                      # force le chargement des groupes internes
-        gid = self._file_group.get(warc.file_id)
+        if not (fe.internal and fe.offset != INVALID):
+            self.file_bytes(fid)
+            gid = self._file_group.get(fid)
+            if gid is not None:
+                loc = self._locate_in_group(gid, fid)
+                if loc and loc[1] == len(data):
+                    self.data[loc[0]:loc[0] + len(data)] = data
+                    self.external, self._warc_cache, self._file_group, self._internal_groups_done = {}, {}, {}, False
+                    return
+        if fe.internal and fe.offset != INVALID:
+            return self.replace_file(fid, data)
+        self.file_bytes(fid)                               # force le chargement des groupes internes
+        gid = self._file_group.get(fid)
         if gid is None:
-            raise BfsarError("Cette archive de vagues est dans un BFGRP externe : modifiez le .bfgrp (commande replace-in-grp)")
-        new_grp = rebuild_bfgrp(self.file_bytes(gid), {warc.file_id: new_warc})
-        self.replace_file(gid, new_grp)
+            raise BfsarError("Ce fichier est dans un BFGRP externe : modifiez le .bfgrp lui-même (File > Add BFGRP n'écrit pas dedans)")
+        self.replace_file(gid, rebuild_bfgrp(self.file_bytes(gid), {fid: data}))
+
+    def set_sound_start_offset(self, sound, value: int):
+        """Écrit l'offset de départ d'un son séquence (valeur déjà présente dans l'option bitflag)."""
+        a = self._ref_table("sound")[sound.index]
+        detail = a + self.r.s32(a + 16)
+        if not self.r.u32(detail + 12) & 1:
+            raise BfsarError("Offset de départ absent de ce son")
+        self.data[detail + 16:detail + 20] = value.to_bytes(4, "big" if self.endian == ">" else "little")
+        sound.extra["start_offset"] = value
 
     def attach_group(self, grp_data: bytes) -> int:
         """Charge un BFGRP externe : fournit les fichiers dont le BFSAR ne contient pas les données. Renvoie le nombre de fichiers."""

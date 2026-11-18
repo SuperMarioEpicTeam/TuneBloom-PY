@@ -13,10 +13,10 @@ const ic=c=>`<i class="i">${c}</i>`;
 async function api(path,opt){const r=await fetch("/api/"+path,opt);if(!r.ok){let m=r.statusText;try{m=(await r.json()).error||m}catch(e){}throw new Error(m)}return r}
 const jget=async p=>(await api(p)).json();
 const jpost=async(p,b)=>(await api(p,{method:"POST",body:JSON.stringify(b)})).json();
-function toast(m){const t=document.createElement("div");t.className="toast";t.textContent=m;document.body.appendChild(t);setTimeout(()=>t.remove(),4500)}
+function toast(m){const t=document.createElement("div");t.className="toast";t.textContent=m;document.body.appendChild(t);setTimeout(()=>t.remove(),9000)}
 
 /* ---------- menu ---------- */
-const MENUS={File:[[IC.file+" New","new"],[IC.fopen+" Open","open"],[IC.save+" Save","save",1],[IC.saveall+" Save As","saveas",1],[IC.fout+" Close","close",1],[IC.door+" Exit","exit"]],
+const MENUS={File:[[IC.file+" New","new"],[IC.fopen+" Open","open"],[IC.fopen+" Add BFGRP…","addgrp",1],[IC.save+" Save","save",1],[IC.saveall+" Save As","saveas",1],[IC.fout+" Close","close",1],[IC.door+" Exit","exit"]],
  More:[[IC.cpu+" System Window","sys"]],Help:[[IC.info+" About","about"]]};
 function drawMenu(){const m=$("menubar");m.innerHTML=Object.keys(MENUS).map(k=>`<div class="mi${S.menu===k?" open":""}" data-m="${k}">${k}</div>`).join("");
  m.querySelectorAll(".mi").forEach(e=>{e.onclick=ev=>{ev.stopPropagation();S.menu=S.menu===e.dataset.m?null:e.dataset.m;drawMenu();if(S.menu){const d=document.createElement("div");d.className="dd";d.style.left=e.offsetLeft+"px";
@@ -25,6 +25,7 @@ function drawMenu(){const m=$("menubar");m.innerHTML=Object.keys(MENUS).map(k=>`
 document.addEventListener("click",()=>{if(S.menu){S.menu=null;drawMenu()}});
 async function act(a){
  if(a==="open"||a==="new")return openDialog();
+ if(a==="addgrp")return pathDialog("Add BFGRP","",async p=>{try{const r=await jpost("addgrp",{path:p});toast(r.files+" fichiers fournis par le BFGRP");S.props=S.sel!==null?await jget(`item?cat=${S.cat}&i=${S.sel}`):[];drawAll()}catch(e){toast(e.message)}});
  if(a==="save"){await jpost("save",{});await refreshState();toast("Saved")}
  if(a==="saveas")return pathDialog("Save As",S.st.path||"",async p=>{await jpost("save",{path:p});await refreshState()});
  if(a==="close"){await jpost("close",{});S.tabs=[];S.tab="info";S.cat="info";await refreshState()}
@@ -53,8 +54,8 @@ function openDialog(){pathDialog("Open BFSAR","",async p=>{try{await jpost("open
 /* ---------- état ---------- */
 async function refreshState(){S.st=await jget("state");drawAll()}
 async function loadCat(c){S.cat=c;S.tab="info";S.sel=null;S.props=[];S.search="";S.showSearch=false;
- if(c==="info"||!S.st.open){S.rows=[];drawAll();return}
- S.rows=await jget("list?cat="+c);drawAll()}
+ if(c==="info"||!S.st.open){S.rows=[];drawAll(true);return}
+ S.rows=await jget("list?cat="+c);drawAll(true)}
 async function select(i){S.sel=i;S.props=await jget(`item?cat=${S.cat}&i=${i}`);drawAll()}
 
 /* ---------- panneaux ---------- */
@@ -63,14 +64,16 @@ function drawLeft(){
  $("left").querySelectorAll("[data-c]").forEach(e=>e.onclick=()=>loadCat(e.dataset.c))}
 function visibleRows(){const q=S.search.toLowerCase();return q?S.rows.filter(r=>r.name.toLowerCase().includes(q)):S.rows}
 function drawCenter(){
+ const _sc=SCROLLERS.slice(0,3).map(q=>{const e=document.querySelector(q);return [q,e?e.scrollTop:0]});
  const tabs=[`<div class="tab ${S.tab==="info"?"act":""}" data-t="info">${ic(IC.pen)} Info</div>`].concat(S.tabs.map(t=>`<div class="tab ${S.tab===t.id?"act":""}" data-t="${t.id}">${ic(IC.file)} ${esc(t.title)}</div>`));
  const close=S.tab!=="info"?`<div class="menuarrow">▾ &nbsp;<span class="i" id="tclose" style="cursor:pointer">${IC.x}</span></div>`:`<div class="menuarrow">▾</div>`;
  let body="";
  if(S.tab==="info")body=infoBody();else{const t=S.tabs.find(t=>t.id===S.tab);body=t?(t.type==="bank"?bankBody():seqBody()):""}
  $("center").innerHTML=`<div class="strip">${tabs.join("")}${close}</div>${body}`;
- $("center").querySelectorAll("[data-t]").forEach(e=>e.onclick=()=>{S.tab=e.dataset.t;S.rtab=S.tab==="info"?0:(S.tabs.find(t=>t.id===S.tab).type==="seq"?1:0);drawAll()});
- const tc=$("tclose");if(tc)tc.onclick=()=>{S.tabs=S.tabs.filter(t=>t.id!==S.tab);S.tab="info";S.rtab=0;drawAll()};
- if(S.tab==="info")bindInfo();else if(S.tabs.find(t=>t.id===S.tab).type==="bank")bindBank();else bindSeq()}
+ $("center").querySelectorAll("[data-t]").forEach(e=>e.onclick=()=>{S.tab=e.dataset.t;S.rtab=S.tab==="info"?0:(S.tabs.find(t=>t.id===S.tab).type==="seq"?1:0);drawAll(true)});
+ const tc=$("tclose");if(tc)tc.onclick=()=>{S.tabs=S.tabs.filter(t=>t.id!==S.tab);S.tab="info";S.rtab=0;drawAll(true)};
+ if(S.tab==="info")bindInfo();else if(S.tabs.find(t=>t.id===S.tab).type==="bank")bindBank();else bindSeq();
+ _sc.forEach(([q,v])=>{const e=document.querySelector(q);if(e&&v)e.scrollTop=v})}
 function infoBody(){
  if(!S.st.open)return `<div class="body dropzone">No project open. Use <b>File &gt; Open</b> to load a .bfsar file.</div>`;
  if(S.cat==="info")return `<div class="body prop"><div class="prow"><span class="lab">Path</span></div><div class="prow"><div class="w" style="width:100%"><div class="fld ro">${esc(S.st.path||"")}</div></div></div>
@@ -91,10 +94,10 @@ function bindInfo(){
  const q=$("q");if(q){q.oninput=()=>{S.search=q.value;const p=q.selectionStart;drawCenter();const n=$("q");n.focus();n.setSelectionRange(p,p)};$("qx").onclick=()=>{S.showSearch=false;S.search="";drawCenter()}}}
 async function openEditor(i){
  const r=S.rows.find(r=>r.i===i);if(!r)return;
- if(S.cat==="banks"){const id="bank"+i;if(!S.tabs.find(t=>t.id===id)){const d=await jget("bank?i="+i);S.tabs.push({id,type:"bank",title:`[${i}] ${r.name}`,data:d,ins:0,reg:0})}S.tab=id;S.rtab=0}
+ if(S.cat==="banks"){const id="bank"+i;if(!S.tabs.find(t=>t.id===id)){const d=await jget("bank?i="+i);S.tabs.push({id,type:"bank",bank:i,title:`[${i}] ${r.name}`,data:d,ins:0,reg:0})}S.tab=id;S.rtab=0}
  else if(S.cat==="bankfiles"){toast("Utilisez la catégorie Banks pour éditer une banque")}
- else if((S.cat==="seq"||S.cat==="allsounds")&&r.icon==="seq"||S.cat==="seqfiles"){const id="seq"+S.cat+i;if(!S.tabs.find(t=>t.id===id)){try{const d=await jget(`seq?kind=${S.cat==="seqfiles"?"file":"sound"}&i=${i}`);S.tabs.push({id,type:"seq",title:`[${i}] ${r.name}`,data:d,follow:true,trail:true})}catch(e){return toast(e.message)}}S.tab=id;S.rtab=1}
- drawAll()}
+ else if((S.cat==="seq"||S.cat==="allsounds")&&r.icon==="seq"||S.cat==="seqfiles"){const id="seq"+S.cat+i;if(!S.tabs.find(t=>t.id===id)){try{const d=await jget(`seq?kind=${S.cat==="seqfiles"?"file":"sound"}&i=${i}`);S.tabs.push({id,type:"seq",kind:S.cat==="seqfiles"?"file":"sound",i,title:`[${i}] ${r.name}`,data:d,follow:true,trail:true,edit:false,text:""})}catch(e){return toast(e.message)}}S.tab=id;S.rtab=1}
+ drawAll(true)}
 
 /* ---------- propriétés ---------- */
 function drawRight(){
@@ -103,7 +106,7 @@ function drawRight(){
  if(!cur)body=propsBody();else if(cur.type==="bank")body=bankProps(cur);else body=S.rtab===1?paramBody():propsBody();
  $("right").innerHTML=`<div class="strip">${tabs.map((t,i)=>`<div class="tab ${S.rtab===i?"act":"dimt"}" data-r="${i}">${ic(icons[i])} ${t}</div>`).join("")}<div class="menuarrow">▾</div></div><div class="body prop">${body}</div>`;
  $("right").querySelectorAll("[data-r]").forEach(e=>e.onclick=()=>{S.rtab=+e.dataset.r;drawRight()});
- bindProps()}
+ bindProps();if(cur&&cur.type==="bank")bindBankProps(cur)}
 function propsBody(){
  if(!S.st.open||S.sel===null||S.cat==="info")return "";
  return S.props.map((p,n)=>{
@@ -113,21 +116,24 @@ function propsBody(){
   let w="";
   if(p.t==="text")w=`<div class="fld ro">${esc(p.v)}</div>`;
   else if(p.t==="num")w=`<input class="f fld" data-k="${p.key||""}" value="${p.v}" ${p.ro?"readonly":""} style="${p.ro?"color:#c8c8cf":""}"><button class="btn" data-d="-1" data-n="${n}">-</button><button class="btn" data-d="1" data-n="${n}">+</button>`;
-  else if(p.t==="combo")w=`<div class="fld ro" style="flex:1">${esc(p.v)}</div><div class="btn" style="width:26px;background:#2a4f7a">▼</div>${p.nav?`<div class="btn">◀</div><div class="btn">▶</div>`:""}`;
+  else if(p.t==="combo")w=`<div class="fld ro" style="flex:1">${esc(p.v)}</div><div class="btn" style="width:26px;background:#2a4f7a">▼</div>${p.nav?`<div class="btn" ${p.key?`data-pn="${p.key}" data-pv="${(p.cur-1+p.n)%p.n}"`:""}>◀</div><div class="btn" ${p.key?`data-pn="${p.key}" data-pv="${(p.cur+1)%p.n}"`:""}>▶</div>`:""}`;
   else if(p.t==="check")return `<div class="prow ${p.dim?"dis":""}"><div class="chk">${p.v?IC.check:""}</div><span class="lab" style="color:${p.dim?"#6a6a78":"inherit"}">${esc(p.label)}</span></div>`;
-  else if(p.t==="slider")w=`<div class="slider"><div class="th"></div>${(+p.v).toFixed(3)}</div>`;
+  else if(p.t==="slider")w=p.key?`<input class="f fld" data-k="${p.key}" style="text-align:center" value="${(+p.v).toFixed(3)}">`:`<div class="slider"><div class="th"></div>${(+p.v).toFixed(3)}</div>`;
   return `<div class="prow"><div class="w">${w}</div><span class="lab">${esc(p.label)}</span></div>`}).join("")}
 function bindProps(){
  $("right").querySelectorAll("[data-k]").forEach(inp=>{if(!inp.dataset.k)return;const commit=async v=>{try{await jpost("set",{cat:S.cat,i:S.sel,key:inp.dataset.k,value:v});S.props=await jget(`item?cat=${S.cat}&i=${S.sel}`);S.st=await jget("state");drawRight();drawCenter()}catch(e){toast(e.message)}};
   inp.onchange=()=>commit(inp.value);
   inp.parentElement.querySelectorAll("[data-d]").forEach(b=>b.onclick=()=>commit(+inp.value+ +b.dataset.d))});
+ $("right").querySelectorAll("[data-pn]").forEach(b=>b.onclick=async()=>{try{await jpost("set",{cat:S.cat,i:S.sel,key:b.dataset.pn,value:+b.dataset.pv});S.props=await jget(`item?cat=${S.cat}&i=${S.sel}`);S.st=await jget("state");drawRight();drawCenter()}catch(e){toast(e.message)}});
  $("right").querySelectorAll("[data-sp]").forEach(b=>b.onclick=()=>play("allsounds:"+b.dataset.sp,b.dataset.sp))}
 function paramBody(){return `<div style="color:#9aa;margin:4px 0">(?)</div><div class="subtabs"><div>Basic</div><div class="act">Track</div><div>Send</div></div>
  <div class="btn lc" style="margin-bottom:6px">${IC.rst}</div>`+Array.from({length:16},(_,i)=>`<div class="trk"><div class="fld ro">1.000</div><span class="lab" style="width:78px;white-space:nowrap">Track ${i}</span><div class="tb"><i style="width:${[40,12,8,10,20,50,10,45,10,30,40,30,40,10,12,20][i]}%"></i><b>02/18</b></div></div>`).join("")}
 
 /* ---------- éditeur de banque ---------- */
-const WHITE=[0,2,4,5,7,9,11],BLACK={1:.62,3:1.62,6:3.62,8:4.62,10:5.62};
-function keyX(k,W){const o=Math.floor(k/12),n=k%12;if(!(n in BLACK)){return (o*7+WHITE.indexOf(n))*W}return (o*7+BLACK[n])*W}
+const WHITE=[0,2,4,5,7,9,11],BLK={1:1,3:2,6:4,8:5,10:6};
+/* centre horizontal de la touche k (en largeurs de touche blanche) : blanche = milieu de sa case, noire = frontière entre deux blanches */
+function cx(k){const o=Math.floor(k/12),n=k%12;return (o*7+(n in BLK?BLK[n]:WHITE.indexOf(n)+0.5))}
+function edge(k){return k<=0?0:k>=128?cx(127)+0.5:(cx(k-1)+cx(k))/2}   /* frontière entre les touches k-1 et k */
 function bankBody(){
  const t=S.tabs.find(t=>t.id===S.tab);const ins=t.data.instruments;
  return `<div class="body ed" style="display:flex;flex-direction:column"><div class="ilist" style="margin:8px 6px 0;height:392px;overflow:auto;border:1px solid #20202e">${ins.map((x,i)=>`<div class="r${t.ins===i?" sel":""}" data-ins="${i}" style="padding-left:8px">[${x.p}]&nbsp;Instrument</div>`).join("")}</div>
@@ -138,23 +144,35 @@ function bindBank(){
  const t=S.tabs.find(t=>t.id===S.tab);if(!t)return;
  $("center").querySelectorAll("[data-ins]").forEach(e=>e.onclick=()=>{t.ins=+e.dataset.ins;t.reg=0;drawAll()});
  const k=$("kbd");if(!k)return;const W=k.clientWidth/75,regs=t.data.instruments[t.ins].regions;k.innerHTML="";
- regs.forEach((r,n)=>{const d=document.createElement("div");d.className="reg"+(n===t.reg?" sel":"");const x0=keyX(r.kmin,W),x1=keyX(r.kmax,W)+(((r.kmax%12) in BLACK)?W*.6:W);
+ regs.forEach((r,n)=>{const d=document.createElement("div");d.className="reg"+(n===t.reg?" sel":"");const x0=edge(r.kmin)*W,x1=edge(r.kmax+1)*W;
   d.style.left=x0+"px";d.style.width=Math.max(6,x1-x0)+"px";d.textContent=r.name;d.onclick=()=>{t.reg=n;drawAll()};k.appendChild(d)});
- for(let o=0;o<11;o++)for(const n of WHITE){const kk=o*12+n;if(kk>127)break;const d=document.createElement("div");d.className="wk";d.style.left=keyX(kk,W)+"px";d.style.width=W+"px";k.appendChild(d)}
- for(let o=0;o<11;o++)for(const n in BLACK){const kk=o*12+ +n;if(kk>127)break;const d=document.createElement("div");d.className="bk";d.style.left=keyX(kk,W)-W*.3+"px";d.style.width=W*.6+"px";k.appendChild(d)}
+ for(let o=0;o<11;o++)for(const n of WHITE){const kk=o*12+n;if(kk>127)break;const d=document.createElement("div");d.className="wk";d.dataset.k=kk;d.onclick=()=>playNote(t,kk);d.style.left=(cx(kk)-0.5)*W+"px";d.style.width=W+"px";k.appendChild(d)}
+ for(let o=0;o<11;o++)for(const n in BLK){const kk=o*12+ +n;if(kk>127)break;const d=document.createElement("div");d.className="bk";d.dataset.k=kk;d.onclick=()=>playNote(t,kk);d.style.left=(cx(kk)-0.3)*W+"px";d.style.width=W*.6+"px";k.appendChild(d)}
  for(let o=0;o<11;o++){const d=document.createElement("div");d.className="oct";d.style.left=(o*7*W+3)+"px";d.textContent=o;k.appendChild(d)}
  const r=regs[t.reg];if(r){$("kk1").textContent=r.kmin;$("kk2").textContent=r.kmax;$("kv1").textContent=r.vmin;$("kv2").textContent=r.vmax;$("kok").textContent=noteName(r.key)}}
 function bankProps(t){
- const r=t.data.instruments[t.ins].regions[t.reg];if(!r)return `<div class="prow"><div class="w"><div class="fld ro">${t.data.instruments[t.ins].p}</div></div><span class="lab">Program Number</span></div>`;
- const num=(v,l)=>`<div class="prow"><div class="w"><div class="fld ro">${v}</div><div class="btn">-</div><div class="btn">+</div></div><span class="lab">${l}</span></div>`;
- return `${num(t.data.instruments[t.ins].p,"Program Number")}<div class="sep"></div>
+ const ins=t.data.instruments[t.ins],r=ins.regions[t.reg];
+ const prg=`<div class="prow"><div class="w"><div class="fld ro">${ins.p}</div><div class="btn">-</div><div class="btn">+</div></div><span class="lab">Program Number</span></div>`;
+ if(!r)return prg;
+ const ed=f=>r.editable.includes(f)||f.startsWith("adshr")&&r.editable.includes("adshr");
+ const num=(v,l,f)=>`<div class="prow"><div class="w"><input class="f fld" ${ed(f)?`data-bf="${f}"`:"readonly"} value="${v}"><button class="btn" ${ed(f)?`data-bf="${f}" data-bd="-1"`:""}>-</button><button class="btn" ${ed(f)?`data-bf="${f}" data-bd="1"`:""}>+</button></div><span class="lab">${l}</span></div>`;
+ const interp=["Nearest Neighbor","Linear","Polyphase (4-point)","Polyphase (6-point)"];
+ return `${prg}<div class="sep"></div>
  <div class="prow"><div class="w"><div class="fld ro" style="flex:1">[${r.wave}] ${esc(r.name)}</div><div class="btn">▼</div><div class="btn">◀</div><div class="btn">▶</div></div><span class="lab">Wave File</span><div class="btn lc">${IC.ext}</div></div>
- ${num(r.key,"Original Key")}${num(r.vol+"",`Volume (${(r.vol/127).toFixed(3)})`)}${num(r.pan,`Pan (${((r.pan-64)/64).toFixed(3)})`)}
- <div class="prow"><div class="w"><div class="slider"><div class="th"></div>${r.pitch.toFixed(3)}</div></div><span class="lab">Pitch</span></div>
- <div class="prow dis"><div class="chk">${r.ino?IC.check:""}</div><span class="lab" style="color:#8a8a96">Ignore Note Off (Percussion Mode) (?)</span></div>
- ${num(r.kg,"Key Group")}<div class="prow"><div class="w"><div class="fld ro" style="flex:1">${["Nearest Neighbor","Linear","Polyphase (4-point)","Polyphase (6-point)"][r.interp]||r.interp}</div><div class="btn">▼</div></div><span class="lab">Interpolation Type</span></div>
- ${["Attack","Decay","Sustain","Hold","Release"].map((l,i)=>num(r.adshr[i],l)).join("")}`}
-
+ ${num(r.key,"Original Key","original_key")}${num(r.vol,`Volume (${(r.vol/127).toFixed(3)})`,"volume")}${num(r.pan,`Pan (${((r.pan-64)/64).toFixed(3)})`,"pan")}
+ <div class="prow"><div class="w"><input class="f fld" style="text-align:center" ${ed("pitch")?'data-bf="pitch"':"readonly"} value="${r.pitch.toFixed(3)}"></div><span class="lab">Pitch</span></div>
+ <div class="prow ${ed("ignore_note_off")?"":"dis"}"><div class="chk" ${ed("ignore_note_off")?'data-bf="ino" style="cursor:pointer"':""}>${r.ino?IC.check:""}</div><span class="lab">Ignore Note Off (Percussion Mode) (?)</span></div>
+ ${num(r.kg,"Key Group","key_group")}<div class="prow"><div class="w"><div class="fld ro" style="flex:1">${interp[r.interp]||r.interp}</div><div class="btn" data-bf="interp" data-cyc="1">▼</div></div><span class="lab">Interpolation Type</span></div>
+ ${["Attack","Decay","Sustain","Hold","Release"].map((l,i)=>num(r.adshr[i],l,"adshr"+i)).join("")}`}
+async function bankSet(t,field,value){
+ try{const r=await jpost("bankset",{bank:t.bank,ins:t.ins,reg:t.reg,field,value});t.data=r;S.st=await jget("state");drawAll()}catch(e){toast(e.message)}}
+function bindBankProps(t){
+ const r=t.data.instruments[t.ins].regions[t.reg];if(!r)return;
+ document.querySelectorAll("#right [data-bf]").forEach(el=>{const f=el.dataset.bf;
+  if(el.tagName==="INPUT")el.onchange=()=>bankSet(t,f,f==="pitch"?parseFloat(el.value):parseInt(el.value));
+  else if(el.dataset.bd){const inp=el.parentElement.querySelector("input");el.onclick=()=>bankSet(t,f,parseInt(inp.value)+parseInt(el.dataset.bd))}
+  else if(f==="ino")el.onclick=()=>bankSet(t,"ignore_note_off",r.ino?0:1);
+  else if(el.dataset.cyc)el.onclick=()=>bankSet(t,"interp",((r.interp||0)+1)%4)})}
 /* ---------- éditeur de séquence ---------- */
 function hl(t){return esc(t).replace(/ /g,'<span class="sp">\u00b7</span>').replace(/(-?\b\d+\b)/g,'<span class="num">$1</span>')}
 function seqBody(){
@@ -162,9 +180,20 @@ function seqBody(){
  const combo=(v,l,extra="")=>`<div class="crow"><div class="fld ro" style="flex:1">${esc(v)}</div><div class="btn">▼</div><div class="btn">◀</div><div class="btn">▶</div><span class="lab" style="width:60px">${l}</span>${extra}</div>`;
  let h=`<div class="body ed" style="display:flex;flex-direction:column;overflow:hidden"><div class="opts" style="padding:6px 8px 0"><div style="color:#cfd;margin-bottom:6px">Options</div>${d.banks.map((b,i)=>combo(b,"Bank "+i,`<div class="btn lc">${IC.file}</div>`)).join("")}
  <div class="crow"><div class="fld ro" style="flex:1">${esc(d.start_label)}</div><div class="btn">▼</div><span class="lab">Start Label</span></div>
- <div class="mmlbar" style="padding:2px 0"><div class="pbtn" style="width:28px;height:28px" id="seqplay">${IC.play}</div><div class="btn lc" style="width:28px;height:28px">${IC.file}</div><div class="chk" style="width:24px;height:24px;font-size:15px">${t.follow?IC.check:""}</div><span>Follow</span><div class="fld ro" style="flex:1;height:28px">Track 4</div><div class="btn">▼</div><span>Track</span><div class="chk" style="width:24px;height:24px;font-size:15px">${t.trail?IC.check:""}</div><span>Trail</span></div></div>`;
+ <div class="mmlbar" style="padding:2px 0"><div class="pbtn" style="width:28px;height:28px" id="seqplay">${IC.play}</div><div class="btn lc" id="seqapply" title="Compile & apply (Ctrl+S)" style="width:28px;height:28px;${t.edit?"background:#3d8f4f":""}">${IC.save}</div><div class="chk" style="width:24px;height:24px;font-size:15px">${t.follow?IC.check:""}</div><span>Follow</span><div class="fld ro" style="flex:1;height:28px">Track 4</div><div class="btn">▼</div><span>Track</span><div class="chk" style="width:24px;height:24px;font-size:15px">${t.trail?IC.check:""}</div><span>Trail</span></div></div>`;
+ if(t.edit)return h+`<textarea id="mml" class="code" spellcheck="false" style="border:0;outline:0;resize:none;background:var(--bg);color:#e6e6ea;font:inherit;line-height:20px;padding:0 0 0 12px;white-space:pre;tab-size:4">${esc(t.text)}</textarea></div>`;
  h+=`<div class="code" id="code">${d.lines.map((l,n)=>l.k==="label"?`<div class="ln lbl"><span class="n"></span><span class="lbl2">${esc(l.t)}</span></div>`:`<div class="ln" data-o="${l.o}"><span class="n">${l.o}</span><span class="kw"><span class="sp">\u00b7\u00b7\u00b7\u00b7</span>${hl(l.t)}</span></div>`).join("")}</div></div>`;return h}
-function bindSeq(){const b=$("seqplay");if(!b)return;const t=S.tabs.find(t=>t.id===S.tab);b.onclick=()=>{const key=t.id;play(key,t.id.replace(/^seq(allsounds|seq|seqfiles)/,""),t.id.includes("seqfiles")?null:"sound")}}
+function seqText(d){return d.lines.map(l=>l.k==="label"?l.t:"    "+l.t).join("\n")}
+async function seqApply(t){
+ const ta=$("mml");if(!ta)return;
+ try{const r=await jpost("seqapply",{kind:t.kind,i:t.i,text:ta.value});t.data=r;t.edit=false;S.st=await jget("state");
+  if(r.warnings&&r.warnings.length)toast(r.warnings.join("\n"));else toast("Séquence compilée et appliquée");drawAll()}
+ catch(e){const m=/ligne (\d+)/.exec(e.message);toast(e.message);if(m){const n=+m[1]-1,lines=ta.value.split("\n");let pos=0;for(let k=0;k<n;k++)pos+=lines[k].length+1;ta.focus();ta.setSelectionRange(pos,pos+(lines[n]||"").length);ta.scrollTop=Math.max(0,(n-5)*20)}}}
+function bindSeq(){const b=$("seqplay");if(!b)return;const t=S.tabs.find(t=>t.id===S.tab);
+ const ap=$("seqapply");if(ap)ap.onclick=()=>{if(t.edit)seqApply(t);else{t.edit=true;t.text=seqText(t.data);drawCenter()}};
+ const code=$("code");if(code)code.ondblclick=()=>{t.edit=true;t.text=seqText(t.data);drawCenter();const ta=$("mml");if(ta)ta.focus()};
+ const ta=$("mml");if(ta){ta.onkeydown=ev=>{if((ev.ctrlKey||ev.metaKey)&&ev.key==="s"){ev.preventDefault();seqApply(t)}if(ev.key==="Tab"){ev.preventDefault();const s0=ta.selectionStart;ta.setRangeText("    ",s0,ta.selectionEnd,"end")}if(ev.key==="Escape"){t.edit=false;drawCenter()}}}
+b.onclick=()=>{const key=t.id;play(key,t.id.replace(/^seq(allsounds|seq|seqfiles)/,""),t.id.includes("seqfiles")?null:"sound")}}
 
 /* ---------- lecteur ---------- */
 const A=()=>$("audio");
@@ -182,6 +211,10 @@ A().addEventListener("timeupdate",()=>{const a=A();const f=$("fill");if(f){f.sty
 A().addEventListener("ended",()=>{S.playing=null;drawPlayer();drawCenter()});
 A().addEventListener("pause",drawPlayer);A().addEventListener("play",drawPlayer);
 
-function drawAll(){drawMenu();drawLeft();drawCenter();drawRight();drawPlayer()}
+const SCROLLERS=["#rows","#code",".ilist","#right .body","#center > .body","#left .body"];
+function drawAll(reset){
+ const keep=reset?{}:Object.fromEntries(SCROLLERS.map(q=>{const e=document.querySelector(q);return [q,e?e.scrollTop:0]}));
+ drawMenu();drawLeft();drawCenter();drawRight();drawPlayer();
+ if(!reset)SCROLLERS.forEach(q=>{const e=document.querySelector(q);if(e&&keep[q])e.scrollTop=keep[q]})}
 setInterval(()=>fetch('/api/ping').catch(()=>{}),4000);fetch('/api/ping').catch(()=>{});
 (async()=>{drawAll();await refreshState();if(S.st.open)await loadCat("allsounds")})();

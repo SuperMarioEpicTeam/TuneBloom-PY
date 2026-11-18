@@ -67,7 +67,7 @@ class H(BaseHTTPRequestHandler):
         try:
             with P.lock:
                 self._route(route, q, json.loads(body) if body else {})
-        except LookupError as e:
+        except (LookupError, ValueError) as e:
             self._send(404, dict(error=str(e)))
         except NotImplementedError as e:
             self._send(501, dict(error=str(e)))
@@ -109,6 +109,12 @@ class H(BaseHTTPRequestHandler):
         if r == "audio":
             data, au = P.audio_wav(q["kind"], i, int(q.get("j", 0)))
             return self._send(200, data, "audio/wav")
+        if r == "bankset":
+            return self._send(200, P.bank_set(b["bank"], b["ins"], b["reg"], b["field"], b["value"]))
+        if r == "note":
+            return self._send(200, P.note_wav(i, int(q["prg"]), int(q["key"]), int(q.get("vel", 100))), "audio/wav")
+        if r == "seqapply":
+            return self._send(200, P.seq_apply(b["kind"], b["i"], b["text"]))
         if r == "seq":
             return self._send(200, P.seq_view(q["kind"], i))
         if r == "bank":
@@ -116,6 +122,8 @@ class H(BaseHTTPRequestHandler):
         if r == "addgrp":
             with open(b["path"], "rb") as f:
                 n = P.arc.attach_group(f.read())
+            P._wavecache.clear()
+            P.arc._warc_cache.clear()
             return self._send(200, dict(ok=True, files=n))
         self._send(404, dict(error="route inconnue"))
 

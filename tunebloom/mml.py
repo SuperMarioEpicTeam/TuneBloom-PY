@@ -39,7 +39,9 @@ class SeqFile:
         s32 = lambda o: struct.unpack_from(self.e + "i", data, o)[0]
         blocks = {u16(0x14 + 12 * i): (u32(0x14 + 12 * i + 4), u32(0x14 + 12 * i + 8)) for i in range(u16(16))}
         doff, dsize = blocks[0x5000]
-        self.body = data[doff + 8:doff + dsize]
+        raw = data[doff + 8:doff + dsize]
+        self.body = raw.rstrip(b"\0")            # le remplissage d'alignement (zéros) n'est pas du code
+        self.raw_size = len(raw)
         self.labels = []                       # (offset, nom)
         if 0x5001 in blocks:
             lb = blocks[0x5001][0] + 8
@@ -153,12 +155,16 @@ def decode(seq, p):
     return text, p - start, target
 
 
-def disassemble(seqfile):
+def disassemble(seqfile, entry_offsets=()):
     """Texte complet avec labels (LABL + cibles de jump/call/opentrack), lignes [(offset, texte, kind)]."""
     body = seqfile.body
-    names = {}
+    multi = {}
     for o, n in seqfile.labels:
-        names.setdefault(o, n)
+        multi.setdefault(o, []).append(n)
+    for o in entry_offsets:                  # départs de sons sans label : label automatique Entry_XXXX
+        if o not in multi:
+            multi[o] = [f"Entry_{o:04X}"]
+    names = {o: ns[0] for o, ns in multi.items()}
     # première passe : cibles
     insns, p = [], 0
     while p < len(body):
@@ -170,11 +176,16 @@ def disassemble(seqfile):
     for _, _, tgt in insns:
         if tgt is not None and tgt not in names:
             names[tgt] = f"Label_{tgt:04X}"
+            multi[tgt] = [names[tgt]]
     out = []
     for off, text, tgt in insns:
-        if off in names:
-            out.append((off, names[off] + ":", "label"))
+        for nm in multi.get(off, []):
+            out.append((off, nm + ":", "label"))
         if tgt is not None:
             text = text.replace(f"@{tgt}", names[tgt])
         out.append((off, text, "insn"))
+    for o in sorted(multi):                 # labels situés après la dernière instruction (fin du code)
+        if o >= len(body):
+            for nm in multi[o]:
+                out.append((o, nm + ":", "label"))
     return out

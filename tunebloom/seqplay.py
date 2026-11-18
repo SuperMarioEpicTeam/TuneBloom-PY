@@ -78,7 +78,14 @@ def render_sound(arc, sound, max_seconds=75, sr=32000):
     banks = []
     for bid in sound.extra.get("bank_ids", [])[:4]:
         k = bid & 0xFFFFFF
-        banks.append(Bank(arc.file_bytes(arc.banks[k].file_id)) if (bid >> 24) == 3 and k < len(arc.banks) else None)
+        if (bid >> 24) == 3 and k < len(arc.banks):
+            blob = arc.file_bytes(arc.banks[k].file_id)
+            if blob is None:
+                raise LookupError(f"Banque {arc.banks[k].label} indisponible : ses données sont dans un BFGRP externe "
+                                  f"(menu File > Add BFGRP, ou --grp en ligne de commande)")
+            banks.append(Bank(blob))
+        else:
+            banks.append(None)
     start = sound.extra.get("start_offset") or 0
     vol_sound = sound.extra.get("volume", 127) / 127.0
     wave_cache = {}
@@ -88,7 +95,10 @@ def render_sound(arc, sound, max_seconds=75, sr=32000):
         if key not in wave_cache:
             warc = arc.warcs[warc_id & 0xFFFFFF]
             if warc.file_id not in arc._warc_cache:
-                arc._warc_cache[warc.file_id] = formats.split_bfwar(arc.file_bytes(warc.file_id))
+                blob = arc.file_bytes(warc.file_id)
+                if blob is None:
+                    raise LookupError(f"archive de vagues {warc.label} indisponible")
+                arc._warc_cache[warc.file_id] = formats.split_bfwar(blob)
             au = formats.decode_bfwav(arc._warc_cache[warc.file_id][idx])
             pcm = np.mean([np.asarray(c, dtype=np.float32) for c in au.channels], axis=0) / 32768.0
             wave_cache[key] = (pcm, au.sample_rate, au.loop, au.loop_start, au.loop_end)
@@ -253,9 +263,39 @@ def render_sound(arc, sound, max_seconds=75, sr=32000):
     tick_times.append(t_acc)
     total_end = t_acc
     if not events:
-        raise ValueError("Séquence sans notes")
+        raise LookupError("Cette séquence ne joue aucune note (séquence de contrôle ou notes hors région)")
+    return _mix(banks, vol_sound, events, tick_times, total_end, get_wave, sr)
 
-    # ---- mixage ----
+
+def render_note(arc, bank_index, prg, key, vel=100, gate=1.2, sr=32000):
+    """Joue une seule note d'une banque (clavier de l'éditeur de banque)."""
+    bk = Bank(arc.file_bytes(arc.banks[bank_index].file_id))
+    wave_cache = {}
+    import numpy as np
+
+    def get_wave(warc_id, idx):
+        key_ = (warc_id, idx)
+        if key_ not in wave_cache:
+            warc = arc.warcs[warc_id & 0xFFFFFF]
+            if warc.file_id not in arc._warc_cache:
+                blob = arc.file_bytes(warc.file_id)
+                if blob is None:
+                    raise LookupError(f"archive de vagues {warc.label} indisponible (BFGRP manquant : File > Add BFGRP)")
+                arc._warc_cache[warc.file_id] = formats.split_bfwar(blob)
+            au = formats.decode_bfwav(arc._warc_cache[warc.file_id][idx])
+            pcm = np.mean([np.asarray(c, dtype=np.float32) for c in au.channels], axis=0) / 32768.0
+            wave_cache[key_] = (pcm, au.sample_rate, au.loop, au.loop_start, au.loop_end)
+        return wave_cache[key_]
+
+    t = Track(0, 0)
+    ev = [(0, 1, t, key, vel, prg, 0, 127, 127, 64, 0, 2, (None,) * 5, False)]
+    return _mix([bk], 1.0, ev, [0.0, gate], gate, get_wave, sr)
+
+
+def _mix(banks, vol_sound, events, tick_times, total_end, get_wave, sr):
+    import numpy as np
+    first_error = None
+    mixed = 0
     tail = 6.0
     n_total = int((total_end + tail) * sr)
     L = np.zeros(n_total, dtype=np.float32); R = np.zeros(n_total, dtype=np.float32)
@@ -273,7 +313,8 @@ def render_sound(arc, sound, max_seconds=75, sr=32000):
         if reg is None: continue
         try:
             pcm, wrate, wloop, ls, le = get_wave(reg.warc_id, reg.wave_in_warc)
-        except Exception:
+        except Exception as e:
+            first_error = first_error or e
             continue
         start_s = tick_times[min(t0, len(tick_times) - 1)]
         end_i = min(t0 + ln, len(tick_times) - 1)
@@ -304,8 +345,12 @@ def render_sound(arc, sound, max_seconds=75, sr=32000):
         if end <= s0: continue
         L[s0:end] += seg[:end - s0] * gl
         R[s0:end] += seg[:end - s0] * gr
+        mixed += 1
+    if mixed == 0:
+        raise LookupError("Aucune note audible : " + (str(first_error) if first_error else "instrument/région introuvable dans la banque")
+                          + " (si les vagues sont dans un BFGRP externe, chargez-le via File > Add BFGRP)")
     peak = max(float(np.max(np.abs(L))), float(np.max(np.abs(R))), 1e-9)
-    gain = 0.95 / peak if peak > 0.95 else 1.0
+    gain = 0.8 / peak                      # aperçu : normalisé (les séquences sont souvent très faibles)
     last = np.nonzero((np.abs(L) + np.abs(R)) > 1e-4)[0]
     n_out = int(last[-1]) + 1 if len(last) else n_total
     import array

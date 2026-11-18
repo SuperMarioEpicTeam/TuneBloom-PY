@@ -22,6 +22,7 @@ class VelRegion:
     key_group: int = 0
     interpolation: int = 0
     adshr: tuple = (127, 127, 127, 127, 127)
+    addr: dict = field(default_factory=dict)      # champ -> (adresse u32, indice d'octet) ; 'adshr' -> (adresse, None)
 
 
 @dataclass
@@ -111,16 +112,24 @@ class Bank:
         b8 = lambda x, i: (x >> (8 * i)) & 0xFF
         if flag == 0x20F:                         # RegionParameter inline (BASIC_PARAM_FLAG)
             rp = a + 4 + 4 * 6 if False else a + 8 + 4 * bin(flag).count("1")
+        def vaddr(bit):
+            return a + 4 + bin(flag & ((1 << (bit + 1)) - 1)).count("1") * 4
         k = val(0);  v.original_key = b8(k, 0) if k is not None else 60
+        if k is not None: v.addr["original_key"] = (vaddr(0), 0)
         k = val(1);  v.volume = b8(k, 0) if k is not None else 127
+        if k is not None: v.addr["volume"] = (vaddr(1), 0)
         k = val(2);  v.pan = b8(k, 0) if k is not None else 64
+        if k is not None: v.addr["pan"] = (vaddr(2), 0)
         k = val(3);  v.pitch = struct.unpack(self.e + "f", struct.pack(self.e + "I", k))[0] if k is not None else 1.0
+        if k is not None: v.addr["pitch"] = (vaddr(3), "f")
         k = val(4)
         if k is not None:
             v.ignore_note_off, v.key_group, v.interpolation = b8(k, 0) > 0, b8(k, 1), b8(k, 2)
+            v.addr["ignore_note_off"], v.addr["key_group"], v.addr["interp"] = (vaddr(4), 0), (vaddr(4), 1), (vaddr(4), 2)
         k = val(9)
         if k is not None:                         # offset (depuis a) vers une Reference -> AdshrCurve (5 octets)
             ref = a + k
             cur = ref + self.s32(ref + 4)
             v.adshr = tuple(self.d[cur:cur + 5])
+            v.addr["adshr"] = (cur, None)
         return v

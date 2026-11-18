@@ -99,7 +99,7 @@ class Project:
             ex = s.extra
             add(dict(t="text", label="Name", v=s.label, ro=True))
             pl = a.players[ex["player_id"] & 0xFFFFFF] if (ex.get("player_id", INVALID) >> 24) == 4 and (ex["player_id"] & 0xFFFFFF) < len(a.players) else None
-            add(dict(t="combo", label="Player", v=f"[{ex['player_id'] & 0xFFFFFF}] {pl.label}" if pl else "[-] (none)", ro=True, nav=True))
+            add(dict(t="combo", label="Player", v=f"[{ex['player_id'] & 0xFFFFFF}] {pl.label}" if pl else "[-] (none)", ro=False, nav=True, key="player", n=len(a.players), cur=ex["player_id"] & 0xFFFFFF))
             add(dict(t="num", label=f"Volume ({ex['volume'] / 127:.3f})", v=ex["volume"], key="volume"))
             add(dict(t="num", label="Remote Filter", v=self._remote_filter(s), key="remote_filter"))
             add(dict(t="check", label="Enable Pan Param", v=True, ro=True))
@@ -118,7 +118,7 @@ class Project:
             if t == "stream":
                 fe = a.files[s.file_id] if s.file_id < len(a.files) else None
                 add(dict(t="text", label="Path (?)", v=(fe.path if fe and not fe.internal else f"(interne) file_{s.file_id}"), ro=True))
-                add(dict(t="slider", label="Pitch", v=ex.get("pitch", 1.0), min=0, max=4, ro=True))
+                add(dict(t="slider", label="Pitch", v=ex.get("pitch", 1.0), min=0, max=4, key="pitch"))
                 for k, lab in (("main", "Main Send"), ("fx0", "Fx Send 0"), ("fx1", "Fx Send 1"), ("fx2", "Fx Send 2")):
                     add(dict(t="num", label=lab, v=127 if k == "main" else 0, ro=True))
             elif t == "wave":
@@ -185,9 +185,20 @@ class Project:
         a = self.arc
         s = a.sounds[i]
         addr = self._sound_addr(s)
-        value = int(value)
+        value = float(value) if key == "pitch" else int(value)
         if key == "volume":
             a.data[addr + 8] = max(0, min(127, value)); s.extra["volume"] = a.data[addr + 8]
+        elif key == "player":
+            n = len(a.players)
+            if n == 0: raise ValueError("Aucun player")
+            v = value % n
+            a.data[addr + 4:addr + 8] = ((4 << 24) | v).to_bytes(4, "big" if a.endian == ">" else "little")
+            s.extra["player_id"] = (4 << 24) | v
+        elif key == "pitch":
+            if s.sound_type != 0x2201: raise ValueError("Pitch : sons stream uniquement")
+            detail = addr + a.r.s32(addr + 16)
+            a.data[detail + 12:detail + 16] = struct.pack(a.endian + "f", float(value))
+            s.extra["pitch"] = float(value)
         elif key == "remote_filter":
             a.data[addr + 9] = max(0, min(127, value))
         else:
@@ -224,7 +235,18 @@ class Project:
         self._wavecache[key] = (data, au)
         return self._wavecache[key]
 
+    def note_wav(self, bank, prg, key, vel):
+        from . import seqplay
+        au = seqplay.render_note(self.arc, bank, prg, key, vel)
+        bio = io.BytesIO()
+        write_wav(au, bio)
+        return bio.getvalue()
+
     # ---------- séquences / banques ----------
+    def _entry_offsets(self, fid):
+        return sorted({s.extra.get("start_offset") for s in self.arc.sounds
+                       if s.sound_type == 0x2203 and s.file_id == fid and s.extra.get("start_offset") is not None})
+
     def seq_view(self, kind, i):
         a = self.arc
         if kind == "sound":
@@ -234,10 +256,72 @@ class Project:
         else:
             fid, start, banks = i, None, [self._bank_label(INVALID)] * 4
         sf = SeqFile(a.file_bytes(fid))
-        lines = disassemble(sf)
+        lines = disassemble(sf, self._entry_offsets(fid))
         start_label = next((n for o, n in sf.labels if o == start), None)
         return dict(file=fid, banks=banks, labels=[n for _, n in sf.labels], start_label=start_label or "",
                     lines=[dict(o=o, t=t, k=k) for o, t, k in lines])
+
+    def seq_apply(self, kind, i, text):
+        """Compile le texte MML, remplace le BFSEQ dans l'archive et recale les offsets de départ des sons."""
+        from .mmlasm import assemble, rebuild_bfseq, AsmError
+        a = self.arc
+        fid = a.sounds[i].file_id if kind == "sound" else i
+        old = bytes(a.file_bytes(fid))
+        oldseq = SeqFile(old)
+        users = [s for s in a.sounds if s.sound_type == 0x2203 and s.file_id == fid]
+        old_start = {}
+        for s in users:
+            so = s.extra.get("start_offset")
+            old_start[s.index] = next((n for o, n in oldseq.labels if o == so), f"Entry_{so:04X}" if so is not None else None)
+        try:
+            code, order = assemble(text)
+        except AsmError as e:
+            raise ValueError(str(e))
+        new, table = rebuild_bfseq(old, code, order)
+        newoff = {n: o for o, n in order}
+        warn = []
+        a.replace_any_file(fid, new)
+        for s in a.sounds:
+            if s.index in old_start:
+                nm = old_start[s.index]
+                if nm and nm in newoff:
+                    a.set_sound_start_offset(s, newoff[nm])
+                elif nm:
+                    warn.append(f"{s.label} : label de départ {nm} supprimé, offset inchangé")
+        self.dirty = True
+        self._wavecache.clear()
+        v = self.seq_view(kind, i)
+        v["warnings"] = warn
+        return v
+
+    def bank_set(self, bank, ins, reg, field, value):
+        """Modifie une valeur déjà présente d'une région de banque (octets existants, même taille de fichier)."""
+        a = self.arc
+        bk = a.banks[bank]
+        raw = bytearray(a.file_bytes(bk.file_id))
+        B = Bank(bytes(raw))
+        regs = [v for kr in B.instruments[ins].regions for v in kr.velocities]
+        v = regs[reg]
+        e = B.e
+        if field.startswith("adshr"):
+            n = int(field[5:])
+            if "adshr" not in v.addr or not 0 <= n < 5:
+                raise ValueError("Courbe ADSHR absente de cette région")
+            raw[v.addr["adshr"][0] + n] = max(0, min(127, int(value)))
+        else:
+            if field not in v.addr:
+                raise ValueError("Ce champ n'est pas stocké dans cette région (valeur par défaut) : non modifiable")
+            addr, bi = v.addr[field]
+            if bi == "f":
+                raw[addr:addr + 4] = struct.pack(e + "f", float(value))
+            else:
+                x = struct.unpack_from(e + "I", raw, addr)[0]
+                x = (x & ~(0xFF << (8 * bi))) | ((max(0, min(127 if field != "key_group" else 255, int(value))) & 0xFF) << (8 * bi))
+                struct.pack_into(e + "I", raw, addr, x)
+        a.replace_any_file(bk.file_id, bytes(raw))
+        self.dirty = True
+        self._wavecache.clear()
+        return self.bank_view(bank)
 
     def bank_view(self, i):
         a = self.arc
@@ -250,7 +334,7 @@ class Project:
                 for v in kr.velocities:
                     regs.append(dict(kmin=kr.kmin, kmax=kr.kmax, vmin=v.vmin, vmax=v.vmax, key=v.original_key, vol=v.volume,
                                      pan=v.pan, pitch=v.pitch, ino=v.ignore_note_off, kg=v.key_group, interp=v.interpolation,
-                                     adshr=list(v.adshr), warc=(v.warc_id & 0xFFFFFF), wave=v.wave_in_warc,
+                                     adshr=list(v.adshr), editable=sorted(v.addr), warc=(v.warc_id & 0xFFFFFF), wave=v.wave_in_warc,
                                      name=f"{self._warc_label(v.warc_id)}/wave_{v.wave_in_warc}"))
             inst.append(dict(p=ins.program, regions=regs))
         return dict(name=b.label, instruments=inst)
