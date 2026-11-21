@@ -16,7 +16,7 @@ const jpost=async(p,b)=>(await api(p,{method:"POST",body:JSON.stringify(b)})).js
 function toast(m){const t=document.createElement("div");t.className="toast";t.textContent=m;document.body.appendChild(t);setTimeout(()=>t.remove(),9000)}
 
 /* ---------- menu ---------- */
-const MENUS={File:[[IC.file+" New","new"],[IC.fopen+" Open","open"],[IC.fopen+" Add BFGRP…","addgrp",1],[IC.save+" Save","save",1],[IC.saveall+" Save As","saveas",1],[IC.fout+" Close","close",1],[IC.door+" Exit","exit"]],
+const MENUS={File:[[IC.file+" New","new"],[IC.fopen+" Open","open"],[IC.fopen+" Add BFGRP…","addgrp",1],[IC.plus+" Add Stream Sound…","addstream",1],[IC.plus+" Add Wave Sound…","addwave",1],[IC.plus+" Add Sequence Sound…","addseq",1],[IC.save+" Save","save",1],[IC.saveall+" Save As","saveas",1],[IC.fout+" Close","close",1],[IC.door+" Exit","exit"]],
  More:[[IC.cpu+" System Window","sys"]],Help:[[IC.info+" About","about"]]};
 function drawMenu(){const m=$("menubar");m.innerHTML=Object.keys(MENUS).map(k=>`<div class="mi${S.menu===k?" open":""}" data-m="${k}">${k}</div>`).join("");
  m.querySelectorAll(".mi").forEach(e=>{e.onclick=ev=>{ev.stopPropagation();S.menu=S.menu===e.dataset.m?null:e.dataset.m;drawMenu();if(S.menu){const d=document.createElement("div");d.className="dd";d.style.left=e.offsetLeft+"px";
@@ -25,6 +25,9 @@ function drawMenu(){const m=$("menubar");m.innerHTML=Object.keys(MENUS).map(k=>`
 document.addEventListener("click",()=>{if(S.menu){S.menu=null;drawMenu()}});
 async function act(a){
  if(a==="open"||a==="new")return openDialog();
+ if(a==="addstream")return addStreamFlow();
+ if(a==="addwave")return addWaveFlow();
+ if(a==="addseq")return addSeqFlow();
  if(a==="addgrp")return pathDialog("Add BFGRP","",async p=>{try{const r=await jpost("addgrp",{path:p});toast(r.files+" fichiers fournis par le BFGRP");S.props=S.sel!==null?await jget(`item?cat=${S.cat}&i=${S.sel}`):[];drawAll()}catch(e){toast(e.message)}});
  if(a==="save"){await jpost("save",{});await refreshState();toast("Saved")}
  if(a==="saveas")return pathDialog("Save As",S.st.path||"",async p=>{await jpost("save",{path:p});await refreshState()});
@@ -88,7 +91,7 @@ function tracksPane(){return `<div style="border-top:2px solid #7d7d82;height:15
 function bindInfo(){
  const rows=$("rows");if(!rows)return;
  rows.querySelectorAll(".r").forEach(e=>{const i=+e.dataset.i;e.onclick=ev=>{if(ev.target.closest("[data-p]"))return;select(i)};
-  e.ondblclick=()=>openEditor(i)});
+  e.ondblclick=()=>openEditor(i);if(RENAMABLE.includes(S.cat))e.oncontextmenu=ev=>ctxMenu(ev,i)});
  rows.querySelectorAll("[data-p]").forEach(b=>b.onclick=ev=>{ev.stopPropagation();play(S.cat+":"+b.dataset.p,b.dataset.p)});
  document.onkeydown=ev=>{if((ev.ctrlKey||ev.metaKey)&&ev.key==="f"){ev.preventDefault();S.showSearch=true;drawCenter();const q=$("q");q&&q.focus()}if(ev.key==="Escape"&&S.showSearch){S.showSearch=false;S.search="";drawCenter()}};
  const q=$("q");if(q){q.oninput=()=>{S.search=q.value;const p=q.selectionStart;drawCenter();const n=$("q");n.focus();n.setSelectionRange(p,p)};$("qx").onclick=()=>{S.showSearch=false;S.search="";drawCenter()}}}
@@ -99,6 +102,50 @@ async function openEditor(i){
  else if((S.cat==="seq"||S.cat==="allsounds")&&r.icon==="seq"||S.cat==="seqfiles"){const id="seq"+S.cat+i;if(!S.tabs.find(t=>t.id===id)){try{const d=await jget(`seq?kind=${S.cat==="seqfiles"?"file":"sound"}&i=${i}`);S.tabs.push({id,type:"seq",kind:S.cat==="seqfiles"?"file":"sound",i,title:`[${i}] ${r.name}`,data:d,follow:true,trail:true,edit:false,text:""})}catch(e){return toast(e.message)}}S.tab=id;S.rtab=1}
  drawAll(true)}
 
+/* ---------- menu contextuel (Replace / Export), comme l'original ---------- */
+const RENAMABLE=["allsounds","stream","wave","seq","allsets","wavesets","seqsets","banks","warcs","groups","players"];
+async function reloadKeep(sel){S.rows=await jget("list?cat="+S.cat);S.st=await jget("state");if(sel!==undefined&&sel!==null){S.sel=sel;try{S.props=await jget(`item?cat=${S.cat}&i=${sel}`)}catch(e){}}drawAll()}
+async function doRename(i){
+ const r=S.rows.find(r=>r.i===i);const n=prompt("New name (ASCII, no spaces)",r.name);if(!n||n===r.name)return;
+ try{await jpost("rename",{cat:S.cat,i,name:n});await reloadKeep(i);toast("Renamed")}catch(e){toast(e.message)}}
+async function doDuplicate(i){
+ const r=S.rows.find(r=>r.i===i);const n=prompt("Name of the copy",r.name+"_COPY");if(!n)return;
+ try{const x=await jpost("duplicate",{i,name:n});await reloadKeep(x.index);toast("Sound duplicated")}catch(e){toast(e.message)}}
+function addStreamFlow(){
+ pathDialog("Add Stream Sound — audio (.wav / .bfstm)","",async p=>{
+  const base=p.split(/[\\/]/).pop().replace(/\.[^.]*$/,"").replace(/[^A-Za-z0-9_]/g,"_");
+  const name=prompt("Sound name (ASCII, no spaces)","STM_"+base.toUpperCase());if(!name)return;
+  let loop=null;if(/\.wav$/i.test(p)){const v=prompt("Loop start (sample index, empty = no loop)","");if(v!==null&&v.trim()!=="")loop=parseInt(v)}
+  toast("Encoding… (long files can take a few minutes)");
+  try{const r=await jpost("addstream",{name,path:p,loop});S.cat="stream";S.tab="info";S.rows=await jget("list?cat=stream");S.st=await jget("state");S.sel=r.index;S.props=await jget(`item?cat=stream&i=${r.index}`);drawAll(true);
+   const el=document.querySelector(`#rows .r[data-i="${r.index}"]`);if(el)el.scrollIntoView({block:"center"});toast(r.note)}catch(e){toast(e.message)}})}
+function tmplFor(icon){const r=S.rows.find(r=>r.i===S.sel);return r&&r.icon===icon?S.sel:null}
+async function afterAdd(cat,r){S.cat=cat;S.tab="info";S.rows=await jget("list?cat="+cat);S.st=await jget("state");S.sel=r.index;S.props=await jget(`item?cat=${cat}&i=${r.index}`);drawAll(true);
+ const el=document.querySelector(`#rows .r[data-i="${r.index}"]`);if(el)el.scrollIntoView({block:"center"});toast(r.note)}
+function addWaveFlow(){
+ pathDialog("Add Wave Sound — audio (.wav / .bfwav)","",async p=>{
+  const base=p.split(/[\\/]/).pop().replace(/\.[^.]*$/,"").replace(/[^A-Za-z0-9_]/g,"_");
+  const name=prompt("Sound name (ASCII, no spaces)","SE_"+base.toUpperCase());if(!name)return;
+  toast("Encoding…");try{const r=await jpost("addwave",{name,path:p,template:tmplFor("wave")});await afterAdd("wave",r)}catch(e){toast(e.message)}})}
+async function addSeqFlow(){
+ const name=prompt("Sound name (ASCII, no spaces)","SE_NEW_SEQUENCE");if(!name)return;
+ const code="    prg 0\n    cn4 100, 24\n    wait 24\n    fin";
+ try{const r=await jpost("addseq",{name,code,template:tmplFor("seq")});await afterAdd("seq",r);await openEditor(r.index);toast("Edit the MML (double-click the code), then Ctrl+S")}catch(e){toast(e.message)}}
+function ctxMenu(ev,i){
+ ev.preventDefault();document.querySelectorAll(".dd.ctx").forEach(e=>e.remove());
+ const snd=["allsounds","stream","wave","seq"].includes(S.cat);
+ const items=[["rename","Rename"]].concat(snd?[["duplicate","Duplicate"],["replace","Replace"],["export","Export"],["delete","Delete"]]:[]);
+ const d=document.createElement("div");d.className="dd ctx";d.style.left=ev.clientX+"px";d.style.top=ev.clientY+"px";
+ d.innerHTML=items.map(([k,l])=>`<div data-a="${k}">${l}</div>`).join("");document.body.appendChild(d);
+ d.onclick=async e=>{const a=e.target.dataset.a;d.remove();
+  if(a==="rename")doRename(i);if(a==="duplicate")doDuplicate(i);
+  if(a==="delete"){const r=S.rows.find(r=>r.i===i);if(confirm("Delete sound "+r.name+" ?\nLater sounds are renumbered; its audio file stays in the archive."))
+   try{const x=await jpost("delete",{i});S.sel=null;S.props=[];S.rows=await jget("list?cat="+S.cat);S.st=await jget("state");drawAll();toast("Deleted "+x.name)}catch(e){toast(e.message)}}
+  if(a==="export"){const l=document.createElement("a");l.href="/api/export?i="+i;l.download="";document.body.appendChild(l);l.click();l.remove()}
+  if(a==="replace")pathDialog("Replace with (.wav / .bfstm / .bfwav)","",async p=>{
+   let loop=null;if(/\.wav$/i.test(p)){const v=prompt("Loop start (sample index, empty = no loop)","");if(v!==null&&v.trim()!=="")loop=parseInt(v)}
+   toast("Encoding…");try{const r=await jpost("replace",{i,path:p,loop});S.st=await jget("state");toast(r.note);drawAll()}catch(e){toast(e.message)}})};
+ setTimeout(()=>document.addEventListener("click",()=>d.remove(),{once:true}),0)}
 /* ---------- propriétés ---------- */
 function drawRight(){
  const tabs=["Properties -…","Player Param…","Sequence Var…"],icons=[IC.tprops,IC.set2,IC.bin];
@@ -116,7 +163,7 @@ function propsBody(){
   let w="";
   if(p.t==="text")w=`<div class="fld ro">${esc(p.v)}</div>`;
   else if(p.t==="num")w=`<input class="f fld" data-k="${p.key||""}" value="${p.v}" ${p.ro?"readonly":""} style="${p.ro?"color:#c8c8cf":""}"><button class="btn" data-d="-1" data-n="${n}">-</button><button class="btn" data-d="1" data-n="${n}">+</button>`;
-  else if(p.t==="combo")w=`<div class="fld ro" style="flex:1">${esc(p.v)}</div><div class="btn" style="width:26px;background:#2a4f7a">▼</div>${p.nav?`<div class="btn" ${p.key?`data-pn="${p.key}" data-pv="${(p.cur-1+p.n)%p.n}"`:""}>◀</div><div class="btn" ${p.key?`data-pn="${p.key}" data-pv="${(p.cur+1)%p.n}"`:""}>▶</div>`:""}`;
+  else if(p.t==="combo")w=`<div class="fld ro" style="flex:1">${esc(p.v)}</div><div class="btn" style="width:26px;background:#2a4f7a" ${p.cyc?`data-pn="${p.key}" data-pv="${(p.cur+1)%p.n}"`:""}>▼</div>${p.nav?`<div class="btn" ${p.key?`data-pn="${p.key}" data-pv="${(p.cur-1+p.n)%p.n}"`:""}>◀</div><div class="btn" ${p.key?`data-pn="${p.key}" data-pv="${(p.cur+1)%p.n}"`:""}>▶</div>`:""}`;
   else if(p.t==="check")return `<div class="prow ${p.dim?"dis":""}"><div class="chk">${p.v?IC.check:""}</div><span class="lab" style="color:${p.dim?"#6a6a78":"inherit"}">${esc(p.label)}</span></div>`;
   else if(p.t==="slider")w=p.key?`<input class="f fld" data-k="${p.key}" style="text-align:center" value="${(+p.v).toFixed(3)}">`:`<div class="slider"><div class="th"></div>${(+p.v).toFixed(3)}</div>`;
   return `<div class="prow"><div class="w">${w}</div><span class="lab">${esc(p.label)}</span></div>`}).join("")}
@@ -201,12 +248,12 @@ function fmt(s){if(!isFinite(s))s=0;const m=Math.floor(s/60);return String(m).pa
 function drawPlayer(){
  const a=A(),playing=!a.paused&&a.src;
  $("player").innerHTML=`<div class="strip"><div class="tab act">${ic(IC.music)} Player</div><div class="menuarrow">▾</div></div><div class="ctl"><div class="pb" id="pp">${playing?IC.pause:IC.play}</div><div class="pb" id="ps">${IC.sq}</div><span class="tm" id="tcur">${fmt(a.currentTime||0)}</span>
-  <div class="bar" id="bar"><div class="fill" id="fill" style="width:${a.duration?100*a.currentTime/a.duration:0}%"></div></div><span class="tm" id="ttot" style="text-align:right">${fmt(a.duration||0)}</span><i class="i" style="font-size:18px">${IC.vol2}</i></div>`;
+  <div class="bar" id="bar"><div class="fill" id="fill" style="width:${a.duration?100*a.currentTime/a.duration:0}%"></div>${a.duration&&S.loop&&S.loop.length===2?`<div class="mk" style="left:${100*S.loop[0]/a.duration}%;background:#18c24a"></div><div class="mk" style="left:calc(${100*S.loop[1]/a.duration}% - 2px);background:#d22"></div>`:""}</div><span class="tm" id="ttot" style="text-align:right">${fmt(a.duration||0)}</span><i class="i" style="font-size:18px">${IC.vol2}</i></div>`;
  $("pb");$("pp").onclick=()=>{if(!a.src)return;a.paused?a.play():a.pause()};$("ps").onclick=()=>{a.pause();a.currentTime=0;S.playing=null;drawPlayer();drawCenter()};
  $("bar").onclick=ev=>{if(a.duration){const r=$("bar").getBoundingClientRect();a.currentTime=a.duration*(ev.clientX-r.left)/r.width}}}
 async function play(key,i,kind){
  const a=A();try{const k=kind||(S.cat==="wavefiles"?"wavefile":"sound");
-  const r=await api(`audio?kind=${k}&i=${i}`);const blob=await r.blob();a.src=URL.createObjectURL(blob);await a.play();S.playing={key};drawPlayer();drawCenter()}catch(e){toast(e.message)}}
+  const r=await api(`audio?kind=${k}&i=${i}`);const blob=await r.blob();S.loop=(r.headers.get("X-Loop")||"").split(",").map(parseFloat).filter(x=>!isNaN(x));a.src=URL.createObjectURL(blob);await a.play();S.playing={key};drawPlayer();drawCenter()}catch(e){toast(e.message)}}
 A().addEventListener("timeupdate",()=>{const a=A();const f=$("fill");if(f){f.style.width=(a.duration?100*a.currentTime/a.duration:0)+"%";$("tcur").textContent=fmt(a.currentTime);$("ttot").textContent=fmt(a.duration)}});
 A().addEventListener("ended",()=>{S.playing=null;drawPlayer();drawCenter()});
 A().addEventListener("pause",drawPlayer);A().addEventListener("play",drawPlayer);

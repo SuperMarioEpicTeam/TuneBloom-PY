@@ -13,7 +13,7 @@ def _open(a):
     arc = Bfsar.open(a.bfsar)
     for g in getattr(a, "grp", None) or []:
         with open(g, "rb") as f:
-            print(f"{g} : {arc.attach_group(f.read())} fichiers")
+            print(f"{g} : {arc.attach_group(f.read(), g)} fichiers")
     return arc
 
 
@@ -122,6 +122,14 @@ def cmd_wav2bfwav(a):
     print(f"{a.out} : {len(bf)} octets ({a.enc})")
 
 
+def cmd_wav2bfstm(a):
+    from .wavio import wav_to_bfstm
+    data, ls = wav_to_bfstm(a.wav, a.loop_start)
+    with open(a.out, "wb") as f:
+        f.write(data)
+    print(f"{a.out} : {len(data)} octets" + (f", boucle à l'échantillon {ls}" if a.loop_start is not None else ""))
+
+
 def cmd_gui(a):
     from .server import main
     main(a.bfsar, port=getattr(a, "port", 0) or 0)
@@ -141,6 +149,8 @@ def main(argv=None):
     s = sub.add_parser("wav2bfwav", help="convertir un WAV en BFWAV (encodeur DSP-ADPCM identique au C++)")
     s.add_argument("wav"); s.add_argument("out"); s.add_argument("--enc", choices=["pcm8", "pcm16", "dspadpcm"], default="dspadpcm")
     s.add_argument("--loop-start", type=int, default=None); s.set_defaults(f=cmd_wav2bfwav)
+    s = sub.add_parser("wav2bfstm", help="convertir un WAV en BFSTM (DSP-ADPCM, boucle optionnelle)")
+    s.add_argument("wav"); s.add_argument("out"); s.add_argument("--loop-start", type=int, default=None); s.set_defaults(f=cmd_wav2bfstm)
     s = sub.add_parser("replace-wave", help="remplacer l'audio d'un son Wave par un WAV")
     s.add_argument("bfsar"); s.add_argument("sound"); s.add_argument("wav"); s.add_argument("-o", "--out", required=True)
     s.add_argument("--enc", choices=["pcm8", "pcm16", "dspadpcm"], default="dspadpcm"); s.add_argument("--loop-start", type=int, default=None)

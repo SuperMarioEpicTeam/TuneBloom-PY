@@ -13,6 +13,21 @@ def magic(b):
     return bytes(b[:4]) if b else b""
 
 
+def _stereo_preview(au):
+    """Plus de 2 canaux (pistes superposées d'un BFSTM) : mélange pistes paires -> G, impaires -> D."""
+    if len(au.channels) <= 2:
+        return au
+    from array import array
+    from .formats import Audio
+    n = au.frames
+    L, R = array("h", bytes(n * 2)), array("h", bytes(n * 2))
+    ev, od = au.channels[0::2], au.channels[1::2]
+    for i in range(n):
+        L[i] = max(-32768, min(32767, sum(c[i] for c in ev) // len(ev) * 3 // 2 if len(ev) > 1 else ev[0][i]))
+        R[i] = max(-32768, min(32767, sum(c[i] for c in od) // len(od) * 3 // 2 if len(od) > 1 else od[0][i]))
+    return Audio(au.sample_rate, [L, R], au.loop, au.loop_start, au.loop_end, au.encoding)
+
+
 class Project:
     def __init__(self):
         self.arc = None
@@ -26,7 +41,7 @@ class Project:
         arc = Bfsar.open(path)
         for g in grps:
             with open(g, "rb") as f:
-                arc.attach_group(f.read())
+                arc.attach_group(f.read(), g)
         self.arc, self.path, self.dirty = arc, path, False
         self._wavecache.clear()
 
@@ -102,12 +117,15 @@ class Project:
             add(dict(t="combo", label="Player", v=f"[{ex['player_id'] & 0xFFFFFF}] {pl.label}" if pl else "[-] (none)", ro=False, nav=True, key="player", n=len(a.players), cur=ex["player_id"] & 0xFFFFFF))
             add(dict(t="num", label=f"Volume ({ex['volume'] / 127:.3f})", v=ex["volume"], key="volume"))
             add(dict(t="num", label="Remote Filter", v=self._remote_filter(s), key="remote_filter"))
-            add(dict(t="check", label="Enable Pan Param", v=True, ro=True))
-            add(dict(t="combo", label="Pan Mode", v="Balance", ro=True))
-            add(dict(t="combo", label="Pan Curve", v="Sqrt", ro=True))
-            add(dict(t="check", label="Enable Player Param", v=True, ro=True))
-            add(dict(t="num", label="Player Priority", v=64, ro=True))
-            add(dict(t="num", label="Actor Player Id", v=0, ro=True))
+            pm, pc = self._opt_byte(s, 1, 0), self._opt_byte(s, 1, 1)
+            pr, ac = self._opt_byte(s, 2, 0), self._opt_byte(s, 2, 1)
+            MODES, CURVES = ["Dual", "Balance"], ["Sqrt", "Sin Cos", "Linear"]
+            add(dict(t="check", label="Enable Pan Param", v=pm is not None, ro=True))
+            add(dict(t="combo", label="Pan Mode", v=MODES[pm] if pm is not None and pm < 2 else "Dual", key="pan_mode", cyc=pm is not None, cur=pm or 0, n=2))
+            add(dict(t="combo", label="Pan Curve", v=CURVES[pc] if pc is not None and pc < 3 else "Sqrt", key="pan_curve", cyc=pc is not None, cur=pc or 0, n=3))
+            add(dict(t="check", label="Enable Player Param", v=pr is not None, ro=True))
+            add(dict(t="num", label="Player Priority", v=pr if pr is not None else 64, key="priority", ro=pr is None))
+            add(dict(t="num", label="Actor Player Id", v=ac if ac is not None else 0, key="actor", ro=ac is None))
             add(dict(t="section", label="User Param"))
             add(dict(t="check", label="Enable Front Bypass", v=False, ro=True, dim=True))
             add(dict(t="check", label="Front Bypass (?)", v=False, ro=True, dim=True))
@@ -119,8 +137,9 @@ class Project:
                 fe = a.files[s.file_id] if s.file_id < len(a.files) else None
                 add(dict(t="text", label="Path (?)", v=(fe.path if fe and not fe.internal else f"(interne) file_{s.file_id}"), ro=True))
                 add(dict(t="slider", label="Pitch", v=ex.get("pitch", 1.0), min=0, max=4, key="pitch"))
-                for k, lab in (("main", "Main Send"), ("fx0", "Fx Send 0"), ("fx1", "Fx Send 1"), ("fx2", "Fx Send 2")):
-                    add(dict(t="num", label=lab, v=127 if k == "main" else 0, ro=True))
+                sv = self._send_values(s)
+                for n_, (k, lab) in enumerate((("send0", "Main Send"), ("send1", "Fx Send 0"), ("send2", "Fx Send 1"), ("send3", "Fx Send 2"))):
+                    add(dict(t="num", label=lab, v=sv[n_] if sv else (127 if n_ == 0 else 0), key=k, ro=sv is None))
             elif t == "wave":
                 add(dict(t="num", label="Wave Sound Index", v=ex.get("wsd_index", 0), ro=True))
                 add(dict(t="num", label="File Id", v=s.file_id, ro=True))
@@ -177,6 +196,36 @@ class Project:
     def _sound_addr(self, s):
         return self.arc._ref_table("sound")[s.index]
 
+    def _opt_addr(self, s, bit):
+        """Adresse de la valeur u32 du paramètre optionnel `bit` du son, ou None s'il est absent."""
+        a = self.arc
+        base = self._sound_addr(s) + 20
+        flag = a.r.u32(base)
+        if not (flag >> bit) & 1:
+            return None
+        return base + 4 * bin(flag & ((1 << (bit + 1)) - 1)).count("1")
+
+    def _opt_byte(self, s, bit, idx):
+        addr = self._opt_addr(s, bit)
+        if addr is None:
+            return None
+        v = self.arc.r.u32(addr)
+        return (v >> (8 * idx)) & 0xFF
+
+    def _send_addr(self, s):
+        """Adresse des 4 octets (main, fx0, fx1, fx2) d'un son stream, ou None."""
+        a = self.arc
+        if s.sound_type != 0x2201:
+            return None
+        sa = self._sound_addr(s)
+        detail = sa + a.r.s32(sa + 16)
+        off = a.r.s32(detail + 20)
+        return None if off == -1 else detail + off
+
+    def _send_values(self, s):
+        addr = self._send_addr(s)
+        return list(self.arc.data[addr:addr + 4]) if addr is not None else None
+
     def _remote_filter(self, s):
         return self.arc.r.u8(self._sound_addr(s) + 9)
 
@@ -199,6 +248,20 @@ class Project:
             detail = addr + a.r.s32(addr + 16)
             a.data[detail + 12:detail + 16] = struct.pack(a.endian + "f", float(value))
             s.extra["pitch"] = float(value)
+        elif key in ("pan_mode", "pan_curve", "priority", "actor"):
+            bit, idx = {"pan_mode": (1, 0), "pan_curve": (1, 1), "priority": (2, 0), "actor": (2, 1)}[key]
+            pos = self._opt_addr(s, bit)
+            if pos is None:
+                raise ValueError("Ce paramètre n'est pas stocké pour ce son (valeur par défaut) : non modifiable")
+            lim = {"pan_mode": 1, "pan_curve": 2, "priority": 127, "actor": 255}[key]
+            x = struct.unpack_from(a.endian + "I", a.data, pos)[0]
+            x = (x & ~(0xFF << (8 * idx))) | (max(0, min(lim, value)) << (8 * idx))
+            struct.pack_into(a.endian + "I", a.data, pos, x)
+        elif key.startswith("send"):
+            pos = self._send_addr(s)
+            if pos is None:
+                raise ValueError("Valeurs d'envoi absentes pour ce son")
+            a.data[pos + int(key[4:])] = max(0, min(127, value))
         elif key == "remote_filter":
             a.data[addr + 9] = max(0, min(127, value))
         else:
@@ -230,7 +293,7 @@ class Project:
         else:
             raise ValueError(kind)
         bio = io.BytesIO()
-        write_wav(au, bio)
+        write_wav(_stereo_preview(au), bio)             # le navigateur ne lit que mono/stéréo
         data = bio.getvalue()
         self._wavecache[key] = (data, au)
         return self._wavecache[key]
@@ -241,6 +304,114 @@ class Project:
         bio = io.BytesIO()
         write_wav(au, bio)
         return bio.getvalue()
+
+    # ---------- remplacement / export (menu contextuel de l'original) ----------
+    def replace_sound(self, i, path, loop_start=None):
+        from .wavio import wav_to_bfwav, wav_to_bfstm
+        a = self.arc
+        s = a.sounds[i]
+        low = path.lower()
+        if s.sound_type == 0x2201:
+            if low.endswith(".bfstm"):
+                data = open(path, "rb").read(); note = ""
+            else:
+                data, ls = wav_to_bfstm(path, loop_start); note = f" (boucle à {ls})" if loop_start is not None else ""
+            fe = a.files[s.file_id]
+            if fe.internal and fe.offset != INVALID:
+                a.replace_any_file(s.file_id, data)
+            elif fe.path and a.path:
+                target = os.path.join(os.path.dirname(os.path.abspath(a.path)), fe.path.replace("\\", "/"))
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with open(target, "wb") as f:
+                    f.write(data)
+                note += f" -> écrit dans {target}"
+            else:
+                raise LookupError("Destination du stream introuvable")
+            try:                                   # recaler le nombre de canaux alloués du son dans le BFSAR
+                from .bfstm_write import parse_raw
+                nch = parse_raw(data)["nch"]
+                addr = a._ref_table("sound")[s.index]
+                detail = addr + a.r.s32(addr + 16)
+                a.data[detail + 2:detail + 4] = nch.to_bytes(2, "big" if a.endian == ">" else "little")
+                s.extra["channels"] = nch
+            except Exception:
+                pass
+            self.dirty = True
+            self._wavecache.clear()
+            return dict(ok=True, note="Stream remplacé" + note)
+        if s.sound_type == 0x2202:
+            data = open(path, "rb").read() if low.endswith(".bfwav") else wav_to_bfwav(path, "dspadpcm", loop_start)
+            a.replace_wave(s, data)
+            self.dirty = True
+            self._wavecache.clear()
+            return dict(ok=True, note="Son remplacé")
+        raise ValueError("Seuls les sons Stream et Wave peuvent être remplacés par un fichier audio")
+
+    _KIND = {"allsounds": 1, "stream": 1, "wave": 1, "seq": 1, "allsets": 2, "wavesets": 2, "seqsets": 2,
+             "banks": 3, "players": 4, "warcs": 5, "groups": 6}
+
+    def rename(self, cat, i, name):
+        if cat not in self._KIND:
+            raise ValueError("Cet élément ne peut pas être renommé")
+        self.arc.rename_item(self._KIND[cat], i, name)
+        self.dirty = True
+        self._wavecache.clear()
+
+    def delete_sound(self, i):
+        name = self.arc.sounds[i].label
+        self.arc.delete_sound(i)
+        self.dirty = True
+        self._wavecache.clear()
+        return name
+
+    def duplicate(self, i, name):
+        n = self.arc.duplicate_sound(i, name)
+        self.dirty = True
+        return n
+
+    def add_stream(self, name, path, loop=None, template=None):
+        """Nouveau son Stream : encode/copie le BFSTM à côté du BFSAR (stream/<nom>.bfstm) et ajoute les entrées INFO + chaîne."""
+        from .wavio import wav_to_bfstm
+        from .bfstm_write import parse_raw
+        a = self.arc
+        if not a.path:
+            raise ValueError("Enregistrez d'abord le projet (chemin inconnu pour écrire le stream)")
+        if path.lower().endswith(".bfstm"):
+            data = open(path, "rb").read()
+        else:
+            data, _ = wav_to_bfstm(path, loop)
+        try:
+            nch = parse_raw(data)["nch"]
+        except Exception:
+            nch = None
+        rel = f"stream/{name}.bfstm"
+        idx, fid = a.add_stream_sound(name, rel, template, nch)           # lève une erreur AVANT d'écrire le fichier si le nom est invalide
+        target = os.path.join(os.path.dirname(os.path.abspath(a.path)), rel)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "wb") as f:
+            f.write(data)
+        self.dirty = True
+        return dict(ok=True, index=idx, note=f"Son {name} ajouté ({rel})")
+
+    def add_wave(self, name, path, template=None):
+        from .wavio import wav_to_bfwav
+        data = open(path, "rb").read() if path.lower().endswith(".bfwav") else wav_to_bfwav(path, "dspadpcm")
+        idx, widx = self.arc.add_wave_sound(name, data, template)
+        self.dirty = True
+        self._wavecache.clear()
+        return dict(ok=True, index=idx, note=f"Son Wave {name} ajouté (vague {widx})")
+
+    def add_seq(self, name, code, template=None):
+        idx, off = self.arc.add_sequence_sound(name, code, template)
+        self.dirty = True
+        return dict(ok=True, index=idx, note=f"Son Séquence {name} ajouté (label à l'offset {off})")
+
+    def export_wav(self, i):
+        s = self.arc.sounds[i]
+        data, au = self.audio_wav("sound", i)
+        bio = io.BytesIO()
+        write_wav(au, bio)                 # export complet (tous les canaux)
+        return s.label, bio.getvalue()
 
     # ---------- séquences / banques ----------
     def _entry_offsets(self, fid):

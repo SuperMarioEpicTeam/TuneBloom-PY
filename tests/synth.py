@@ -71,8 +71,9 @@ def bfwar(waves):
         blob += w + b"\x00" * ((-(8 + off + len(w))) % 0x20)
         off += len(w) + (-(8 + off + len(w))) % 0x20
     info_body = P("I", n) + entries
-    info = b"INFO" + P("I", 8 + len(info_body)) + info_body
-    info += b"\x00" * ((-len(info)) % 0x20)
+    isz = (8 + len(info_body) + 0x1F) // 0x20 * 0x20                # comme les vrais BFWAR : la taille du bloc inclut le remplissage
+    info = b"INFO" + P("I", isz) + info_body
+    info += b"\x00" * (isz - len(info))
     fileb = b"FILE" + P("I", 8 + len(blob)) + blob
     hdr_len = 0x40
     header = b"FWAR" + P("HHIIHH", 0xFEFF, hdr_len, 0x00010000, hdr_len + len(info) + len(fileb), 2, 0)

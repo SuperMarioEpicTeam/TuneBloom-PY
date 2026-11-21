@@ -31,3 +31,9 @@ def wav_to_bfwav(path, encoding="dspadpcm", loop_start=None, endian=">"):
         chans = [[v >> 8 for v in c] for c in chans]
     return build_bfwav(chans, rate, enc, loop_enabled=loop_start is not None,
                        loop_start=loop_start or 0, loop_end=len(chans[0]), endian=endian)
+
+
+def wav_to_bfstm(path, loop_start=None, endian=">"):
+    from .bfstm_write import build_bfstm
+    chans, rate = read_wav(path)
+    return build_bfstm(chans, rate, loop_start, endian)

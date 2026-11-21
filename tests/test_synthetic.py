@@ -143,3 +143,49 @@ from tunebloom.mml import decode as dd
 assert dd(assemble("    cn4 127, 300")[0], 0)[0] == "cn4 127, 300"
 assert dd(assemble("    _if wait 3")[0], 0)[0] == "_if wait 3"
 print("OK : assembleur MML")
+
+# ---- BFSTM : écriture (disposition validée sur un vrai fichier SM3DW), relecture, boucle ----
+from tunebloom.bfstm_write import build_bfstm, parse_raw, pack_bfstm
+sig = [int(8000 * math.sin(i / 11)) for i in range(40000)]
+bfs, ls = build_bfstm([sig, sig[::-1]], 32000, loop_start=15)
+assert ls == 14                                            # arrondi à la frame ADPCM
+back = formats.decode_bfstm(bfs)
+assert back.sample_rate == 32000 and len(back.channels) == 2 and back.frames == 40000 and back.loop and back.loop_start == 14
+sn = sum(x * x for x in sig); er = sum((x - y) ** 2 for x, y in zip(sig, back.channels[0]))
+assert 10 * math.log10(sn / max(er, 1)) > 25
+assert pack_bfstm(parse_raw(bfs)) == bfs                   # repack identique
+print("OK : BFSTM")
+
+# ---- arbre Patricia + bloc de chaînes ----
+from tunebloom.patricia import Tree
+from tunebloom.strblock import build_string_block
+names = ["StmDummy", "STM_BGM_TEST", "STM_BGM_TEST_BEATSYNC", "SE_PLY_JUMP", "SE_PLY_JUMP_S", "A", "AB", "B", "PLAYER_BGM"]
+tr = Tree()
+for sid, nm in enumerate(names):
+    tr.insert(nm, sid, (1 << 24) | sid)
+assert all(tr.find(nm) == (i, (1 << 24) | i) for i, nm in enumerate(names))
+assert tr.find("INCONNU") is None and tr.find("") is None
+assert len(tr.nodes) == 2 * len(names) - 1                    # n feuilles + (n-1) nœuds internes
+try:
+    tr.insert("StmDummy", 99, 99); assert False
+except ValueError:
+    pass
+blk = build_string_block(names, tr)
+assert blk[:4] == b"STRG" and len(blk) % 0x20 == 0 and struct.unpack(">I", blk[4:8])[0] == len(blk)
+t2 = Tree.unpack(blk, 8 + 0x10 + ((4 + 12 * len(names) + sum(len(n) + 1 for n in names) + 3) & ~3), names)
+assert t2.root == tr.root and all(a.key() == b.key() for a, b in zip(t2.nodes, tr.nodes))
+print("OK : Patricia / STRG")
+
+# ---- ajout de vagues à un BFWAR / écriture de BFWSD ----
+from tunebloom.wsdwrite import append_waves_to_bfwar, parse_wsd, pack_wsd, add_wave_sound_data
+w3 = synth.bfwar([wav, wav, wav])
+assert append_waves_to_bfwar(w3, [])[0] == w3
+nb, ids = append_waves_to_bfwar(w3, [wav, wav + b"\0" * 40])
+r2 = formats.split_bfwar(nb)
+assert ids == [3, 4] and len(r2) == 5 and all(bytes(r2[i]) == wav for i in range(4)) and len(r2[4]) == len(wav) + 40
+print("OK : BFWAR ajout / BFWSD")
+
+# ---- champs de son : octets de paramètres (pan / player) ----
+x = struct.unpack(">I", struct.pack(">I", 0x00000140))[0]
+assert (x >> 0) & 0xFF == 0x40 and (x >> 8) & 0xFF == 0x01                # DevideBy8bit(value, 0) / (value, 1)
+print("OK : champs de son")

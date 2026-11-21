@@ -40,6 +40,10 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for k, v in getattr(self, "_extra", {}).items():
+            self.send_header(k, v)
+        self._extra = {}
+        self.send_header("Access-Control-Expose-Headers", "X-Loop")
         self.end_headers()
         self.wfile.write(body)
 
@@ -67,7 +71,7 @@ class H(BaseHTTPRequestHandler):
         try:
             with P.lock:
                 self._route(route, q, json.loads(body) if body else {})
-        except (LookupError, ValueError) as e:
+        except (LookupError, ValueError, __import__('tunebloom.bfsar', fromlist=['x']).BfsarError) as e:
             self._send(404, dict(error=str(e)))
         except NotImplementedError as e:
             self._send(501, dict(error=str(e)))
@@ -108,6 +112,33 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, dict(ok=True))
         if r == "audio":
             data, au = P.audio_wav(q["kind"], i, int(q.get("j", 0)))
+            self._extra = {"X-Loop": f"{au.loop_start / au.sample_rate:.4f},{au.loop_end / au.sample_rate:.4f}" if au.loop else ""}
+            return self._send(200, data, "audio/wav")
+        if r == "rename":
+            P.rename(b["cat"], b["i"], b["name"])
+            return self._send(200, dict(ok=True))
+        if r == "delete":
+            return self._send(200, dict(ok=True, name=P.delete_sound(b["i"])))
+        if r == "duplicate":
+            return self._send(200, dict(ok=True, index=P.duplicate(b["i"], b["name"])))
+        if r == "addwave":
+            return self._send(200, P.add_wave(b["name"], b["path"], b.get("template")))
+        if r == "addseq":
+            try:
+                return self._send(200, P.add_seq(b["name"], b["code"], b.get("template")))
+            except Exception as e:
+                if e.__class__.__name__ == "AsmError":
+                    raise ValueError(str(e))
+                raise
+        if r == "addstream":
+            return self._send(200, P.add_stream(b["name"], b["path"], b.get("loop"), b.get("template")))
+        if r == "replace":
+            res = P.replace_sound(b["i"], b["path"], b.get("loop"))
+            P.dirty = True
+            return self._send(200, res)
+        if r == "export":
+            name, data = P.export_wav(i)
+            self._extra = {"Content-Disposition": f'attachment; filename="{name}.wav"'}
             return self._send(200, data, "audio/wav")
         if r == "bankset":
             return self._send(200, P.bank_set(b["bank"], b["ins"], b["reg"], b["field"], b["value"]))
@@ -121,7 +152,7 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, P.bank_view(i))
         if r == "addgrp":
             with open(b["path"], "rb") as f:
-                n = P.arc.attach_group(f.read())
+                n = P.arc.attach_group(f.read(), b["path"])
             P._wavecache.clear()
             P.arc._warc_cache.clear()
             return self._send(200, dict(ok=True, files=n))
