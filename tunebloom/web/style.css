@@ -74,3 +74,4 @@ input[type=text],input.f,select.f,.fld{background:var(--input);border:0;color:va
 .psoundlist{flex:1}
 .sp{color:#4a4a5c}.trk .fld{width:300px}.trk .tb{width:76px}
 .oct{pointer-events:none}.wk{cursor:pointer}.bk{cursor:pointer}
+.code .ln.trail{background:#341f53}.code .ln.cur{background:#68469b}

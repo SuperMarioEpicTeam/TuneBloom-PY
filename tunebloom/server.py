@@ -142,6 +142,22 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, data, "audio/wav")
         if r == "bankset":
             return self._send(200, P.bank_set(b["bank"], b["ins"], b["reg"], b["field"], b["value"]))
+        if r == "waveinfo":
+            return self._send(200, P.wave_info(i))
+        if r == "wavereplace":
+            return self._send(200, P.wave_replace(b["i"], b["path"], b.get("loop")))
+        if r == "waveadd":
+            return self._send(200, P.wave_add(b["warc"], b["path"]))
+        if r == "waveloop":
+            return self._send(200, P.wave_set_loop(b["i"], b.get("loop")))
+        if r == "waveexport":
+            name, data = P.wave_export(i, q.get("fmt", "wav"))
+            self._extra = {"Content-Disposition": f'attachment; filename="{name}"'}
+            return self._send(200, data, "application/octet-stream")
+        if r == "trace":
+            _, au = P.audio_wav(q["kind"], i)
+            tr = getattr(au, "trace", [])
+            return self._send(200, dict(trace=tr[:150000], tracks=getattr(au, "track_ids", [])))
         if r == "note":
             return self._send(200, P.note_wav(i, int(q["prg"]), int(q["key"]), int(q.get("vel", 100))), "audio/wav")
         if r == "seqapply":

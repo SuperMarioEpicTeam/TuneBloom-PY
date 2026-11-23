@@ -69,6 +69,10 @@ class Track:
         self.stack, self.loops, self.cond = [], [], True
         self.vars = {}
         self.last_note = None
+        self.last_key = None
+        self.last_ev = None
+        self.porta_on, self.porta_key, self.porta_time = False, None, 0
+        self.mod_depth, self.mod_speed, self.mod_range, self.mod_type, self.mod_delay = 0, 16, 1, 0, 0
 
 
 def render_sound(arc, sound, max_seconds=75, sr=32000):
@@ -110,6 +114,7 @@ def render_sound(arc, sound, max_seconds=75, sr=32000):
     events = []                       # (tick_start, tick_len, wave, params)
     tick, tick_time, t_acc = 0, 0.0, 0.0          # temps cumulé en secondes (tempo variable)
     tick_times = []
+    trace = []                        # (temps en s, id de piste, offset de l'instruction) pour le suivi des lignes
     steps = 0
     limit_t = max_seconds
     while tracks and any(t.alive for t in tracks) and t_acc < limit_t and steps < 400000:
@@ -126,6 +131,7 @@ def render_sound(arc, sound, max_seconds=75, sr=32000):
                     cmd = body[t.pos]
                 except IndexError:
                     t.alive = False; break
+                trace.append((round(t_acc, 4), t.id, t.pos))
                 p = t.pos + 1
                 cond_ok = True
                 if cmd == 0xa2:
@@ -159,7 +165,23 @@ def render_sound(arc, sound, max_seconds=75, sr=32000):
                     if cond_ok:
                         key = max(0, min(127, cmd + t.trans))
                         ln_t = ln if ln > 0 else 1
-                        events.append((len(tick_times) - 1, ln_t, t, key, vel, t.prg, t.bank, t.vol, t.vol2, t.pan, t.bend, t.bendrange, tuple(t.env), t.tie))
+                        pf = t.porta_key if t.porta_key is not None else (t.last_key if t.porta_on else None)
+                        cur_tick = len(tick_times) - 1
+                        pe = events[t.last_ev] if (t.tie and t.last_ev is not None) else None
+                        if pe is not None and pe[2] is t and pe[0] + pe[1] >= cur_tick:
+                            # legato : la note précédente sonne encore -> même voix, changement de hauteur (pas de nouvelle attaque)
+                            pe[14].setdefault("legato", []).append((cur_tick, key))
+                            events[t.last_ev] = pe[:1] + (cur_tick + ln_t - pe[0],) + pe[2:]
+                            if t.notewait:
+                                t.wait = ln_t
+                            t.last_key, t.porta_key = key, None
+                            t.pos = p
+                            if t.wait: break
+                            continue
+                        events.append((len(tick_times) - 1, ln_t, t, key, vel, t.prg, t.bank, t.vol, t.vol2, t.pan, t.bend, t.bendrange, tuple(t.env), t.tie,
+                                       dict(pf=pf, pt=t.porta_time, md=t.mod_depth, ms=t.mod_speed, mr=t.mod_range, mt=t.mod_type, mdl=t.mod_delay)))
+                        t.last_key, t.porta_key = key, None
+                        t.last_ev = len(events) - 1
                         if t.notewait:
                             t.wait = ln_t
                     t.pos = p
@@ -186,6 +208,7 @@ def render_sound(arc, sound, max_seconds=75, sr=32000):
                 elif cmd in (0xb2, 0xbf, 0xc7, 0xc8, 0xce, 0xdf):
                     v = body[p]; p += 1; t.pos = p
                     if cond_ok and cmd == 0xc7: t.notewait = bool(v)
+                    if cond_ok and cmd == 0xce: t.porta_on = bool(v)
                     if cond_ok and cmd == 0xc8: t.tie = bool(v)
                 elif 0xb0 <= cmd <= 0xdf:
                     a = rd("s8" if cmd in (0xc3, 0xc4) else "u8")
@@ -206,11 +229,18 @@ def render_sound(arc, sound, max_seconds=75, sr=32000):
                         elif cmd == 0xd2: t.env[2] = a
                         elif cmd == 0xb1: t.env[3] = a
                         elif cmd == 0xd3: t.env[4] = a
+                        elif cmd == 0xc9: t.porta_key = max(0, min(127, a + t.trans))
+                        elif cmd == 0xcf: t.porta_time = a
+                        elif cmd == 0xca: t.mod_depth = a
+                        elif cmd == 0xcb: t.mod_speed = a
+                        elif cmd == 0xcc: t.mod_type = a
+                        elif cmd == 0xcd: t.mod_range = a
                         elif cmd == 0xd4:
                             t.loops.append([p, a])            # loop_start n : n répétitions (0 = infini)
                 elif cmd in (0xe0, 0xe1, 0xe3, 0xe4):
                     a = rd("s16"); t.pos = p
                     if cond_ok and cmd == 0xe1: tempo = max(1, a)
+                    if cond_ok and cmd == 0xe0: t.mod_delay = a
                 elif cmd == 0xfb:
                     t.env = [None] * 5; t.pos = p
                 elif cmd == 0xfc:
@@ -264,7 +294,10 @@ def render_sound(arc, sound, max_seconds=75, sr=32000):
     total_end = t_acc
     if not events:
         raise LookupError("Cette séquence ne joue aucune note (séquence de contrôle ou notes hors région)")
-    return _mix(banks, vol_sound, events, tick_times, total_end, get_wave, sr)
+    au = _mix(banks, vol_sound, events, tick_times, total_end, get_wave, sr)
+    au.trace = trace
+    au.track_ids = sorted({e[1] for e in trace})
+    return au
 
 
 def render_note(arc, bank_index, prg, key, vel=100, gate=1.2, sr=32000):
@@ -288,7 +321,7 @@ def render_note(arc, bank_index, prg, key, vel=100, gate=1.2, sr=32000):
         return wave_cache[key_]
 
     t = Track(0, 0)
-    ev = [(0, 1, t, key, vel, prg, 0, 127, 127, 64, 0, 2, (None,) * 5, False)]
+    ev = [(0, 1, t, key, vel, prg, 0, 127, 127, 64, 0, 2, (None,) * 5, False, dict(pf=None, pt=0, md=0, ms=16, mr=1, mt=0, mdl=0))]
     return _mix([bk], 1.0, ev, [0.0, gate], gate, get_wave, sr)
 
 
@@ -300,7 +333,7 @@ def _mix(banks, vol_sound, events, tick_times, total_end, get_wave, sr):
     n_total = int((total_end + tail) * sr)
     L = np.zeros(n_total, dtype=np.float32); R = np.zeros(n_total, dtype=np.float32)
     inst_cache = {}
-    for (t0, ln, tr, key, vel, prg, bank, tvol, tvol2, tpan, bend, brange, tenv, tie) in events:
+    for (t0, ln, tr, key, vel, prg, bank, tvol, tvol2, tpan, bend, brange, tenv, tie, fx) in events:
         bk = banks[bank] if bank < len(banks) else None
         if bk is None or prg >= len(bk.instruments): continue
         reg = None
@@ -324,7 +357,28 @@ def _mix(banks, vol_sound, events, tick_times, total_end, get_wave, sr):
         env = np.power(10.0, env_db / 20.0)
         ratio = 2.0 ** ((key - reg.original_key) / 12.0 + (bend / 128.0) * brange / 12.0) * reg.pitch * wrate / sr
         n_env = int(len(env) * sr / 1000)
-        pos = np.arange(n_env, dtype=np.float64) * ratio
+        tt = np.arange(n_env, dtype=np.float64) / sr
+        semis = np.zeros(n_env)
+        if fx["pf"] is not None and fx["pf"] != key:                       # portamento : glissando depuis la note précédente
+            dur = max(0.02, fx["pt"] * 0.008)
+            semis += (fx["pf"] - key) * (1.0 - np.clip(tt / dur, 0.0, 1.0))
+        prevk = key
+        for (ab_tick, k2) in fx.get("legato", []):
+            ts_ = max(0.0, tick_times[min(ab_tick, len(tick_times) - 1)] - start_s)
+            if fx["pt"] > 0:
+                semis += (k2 - prevk) * np.clip((tt - ts_) / max(0.02, fx["pt"] * 0.008), 0.0, 1.0)
+            else:
+                semis += (k2 - prevk) * (tt >= ts_)
+            prevk = k2
+        trem = None
+        if fx["md"] > 0:                                                   # LFO (approximation : 1 Hz à vitesse 16)
+            lfo = np.sin(2 * np.pi * max(0.05, fx["ms"] * 0.0625) * tt) * (tt >= fx["mdl"] * 0.005)
+            if fx["mt"] == 0:
+                semis += lfo * (fx["md"] / 127.0) * max(1, fx["mr"])
+            elif fx["mt"] == 1:
+                trem = 1.0 + 0.5 * (fx["md"] / 127.0) * lfo
+        step = ratio * np.power(2.0, semis / 12.0) if np.any(semis) else np.full(n_env, ratio)
+        pos = np.concatenate(([0.0], np.cumsum(step)[:-1]))
         if wloop and le > ls:
             m = pos >= ls
             pos[m] = ls + np.mod(pos[m] - ls, le - ls)
@@ -341,6 +395,8 @@ def _mix(banks, vol_sound, events, tick_times, total_end, get_wave, sr):
         gl, gr = math.cos((p + 1) * math.pi / 4), math.sin((p + 1) * math.pi / 4)
         s0 = int(start_s * sr)
         seg = smp * e * amp * 0.5
+        if trem is not None:
+            seg = seg * trem[ok][:len(seg)].astype(np.float32)
         end = min(n_total, s0 + n)
         if end <= s0: continue
         L[s0:end] += seg[:end - s0] * gl

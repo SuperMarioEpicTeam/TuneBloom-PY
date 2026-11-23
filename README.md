@@ -49,14 +49,17 @@ Double-clic sur une banque ou une séquence = ouvre l'éditeur.
 - **Supprimer un son** (clic droit > Delete) : renumérotation des sons suivants, des plages des jeux de sons, des noms et de l'arbre de recherche ; audité sur les 3 archives (le fichier audio reste dans l'archive, inutilisé).
 - **BFGRP externes** (SM3DW) : on peut y écrire (banques, séquences, sons Wave) ; ils sont réécrits à leur emplacement d'origine à la sauvegarde. Un fichier présent en plusieurs copies (BFSAR + BFGRP interne/externe) est mis à jour partout.
 - **Champs de son** lus pour de vrai et modifiables sur place : pan mode/courbe, priorité, acteur, envois (stream), volume, remote filter, player, pitch (quand la valeur est stockée dans le fichier).
+- **Édition des BFWAR / vagues** (Wave Files, Wave Archives) : infos (fréquence, canaux, durée, encodage, boucle, taille, instruments et wave sounds qui l'utilisent), **Replace** par un WAV, **Export** WAV/BFWAV, **Edit loop** (paramètres ADPCM de boucle recalculés, formule vérifiée sur les fichiers réels), **Add Wave** à une archive. Testé sur NSMBU (3 155 vagues) avec sauvegarde et relecture.
 - Un son ajouté écrit son BFSTM dans `stream/` à côté du BFSAR (pensez à copier ce dossier avec le BFSAR).
+
+**Séquenceur (lecture)** : portamento, LFO (vibrato/trémolo, approximation de la vitesse), legato (tie), loops/appels/variables, tempo variable, **suivi de lecture** dans l'éditeur MML (Follow / Trail / choix de la piste, comme l'original). 25 musiques de NSMBU rendues sans erreur. **Justesse de hauteur validée objectivement** sur des vagues tonales de NSMBU (fréquence rendue = fréquence de la vague à la clé d'origine ; +12 touches = ×2,000) ; non applicable aux bruits/impacts.
 
 **Non vérifié** : BFSTM d'autres versions (ex. 4.x avec région) ; séquenceur (rendu approximatif : pas de LFO, portamento, filtres ; hauteur/niveaux non validés à l'oreille) ;
 comportement en jeu d'un BFSAR modifié.
 
 **Pas encore porté** : supprimer autre chose que des sons ; ajouter/renommer des éléments qui n'ont pas de nom stocké ;
 File > New (créer un BFSAR de zéro) ; paramètres 3D des sons ; ajouter un son quand l'archive n'en contient aucun du même type (modèle requis) ;
-lecture de séquence avec suivi des lignes/pistes en temps réel ; LFO/portamento/filtres du séquenceur ; System Window.
+lecture de séquence avec suivi des lignes/pistes en temps réel ; filtres passe-bas, sweep pitch, rampes `_t`, précision des valeurs LFO/portamento du séquenceur ; System Window.
 
 ## Exécutables (GitHub Actions)
 Poussez le dépôt : l'onglet **Actions** construit Windows / Linux / macOS (Intel + ARM) via PyInstaller (`--add-data` des fichiers web inclus).

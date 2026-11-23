@@ -1,5 +1,6 @@
 """Lecture des formats audio NintendoWare : BFSTM (stream), BFWAV (wave), BFWAR (archive de waves)."""
 import sys
+import struct
 from array import array
 from dataclasses import dataclass, field
 
@@ -160,3 +161,51 @@ def decode_any(data: bytes) -> Audio:
     if magic == b"FWAV":
         return decode_bfwav(data)
     raise ValueError(f"Format non décodable en audio : {magic!r}")
+
+
+def bfwav_info(data):
+    """Informations d'un BFWAV sans décoder l'audio."""
+    data = bytes(data)
+    e = detect_endian(data)
+    r = Reader(data, e)
+    blocks = _blocks(r, data)
+    ib = blocks[T_WAV_INFO][0] + 8
+    tbl = ib + 20
+    return dict(version=r.u32(8), encoding=r.u8(ib), loop=bool(r.u8(ib + 1)), rate=r.u32(ib + 4), loop_start=r.u32(ib + 8),
+                frames=r.u32(ib + 12), channels=r.u32(tbl), size=len(data), info_off=ib, endian=e)
+
+
+def bfwav_set_loop(data, loop_start):
+    """Modifie la boucle d'un BFWAV sur place (même taille). loop_start=None désactive la boucle.
+    Pour DSP-ADPCM, recalcule les paramètres de boucle (frame, historiques) à partir de l'audio décodé."""
+    from . import dspadpcm
+    data = bytearray(bytes(data))
+    inf = bfwav_info(data)
+    e, ib = inf["endian"], inf["info_off"]
+    P = lambda v: struct.pack(e + "I", v)
+    if loop_start is None:
+        data[ib + 1] = 0
+        data[ib + 8:ib + 12] = P(0)
+        return bytes(data), 0
+    ls = int(loop_start)
+    if inf["encoding"] == ENC_DSPADPCM:
+        ls = ls // 14 * 14
+    if not 0 <= ls < inf["frames"]:
+        raise ValueError(f"Début de boucle hors limites (0..{inf['frames'] - 1})")
+    data[ib + 1] = 1
+    data[ib + 8:ib + 12] = P(ls)
+    if inf["encoding"] == ENC_DSPADPCM:
+        au = decode_bfwav(bytes(data))
+        r = Reader(data, e)
+        blocks = _blocks(r, data)
+        data_body = blocks[T_WAV_DATA][0] + 8
+        tbl = ib + 20
+        for c in range(inf["channels"]):
+            ci = tbl + r.s32(tbl + 4 + 8 * c + 4)
+            dsp = ci + r.s32(ci + 12)
+            start = data_body + r.s32(ci + 4)
+            lps = data[start + ls // 14 * 8]
+            l1 = au.channels[c][ls - 1] if ls >= 1 else 0
+            l2 = au.channels[c][ls - 2] if ls >= 2 else 0
+            struct.pack_into(e + "Hhh", data, dsp + 38, lps, l1, l2)
+    return bytes(data), ls

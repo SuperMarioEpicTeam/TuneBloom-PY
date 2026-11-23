@@ -169,11 +169,32 @@ class Project:
             for n, wid in enumerate(b.extra.get("warc_ids", [])):
                 add(dict(t="combo", label=f"Wave Archive {n}", v=a.warcs[wid & 0xFFFFFF].label if (wid & 0xFFFFFF) < len(a.warcs) else "?", ro=True))
             return R
+        if cat == "wavefiles":
+            inf = self.wave_info(i)
+            ENC = {0: "PCM 8-bit", 1: "PCM 16-bit", 2: "DSP-ADPCM", 3: "IMA-ADPCM"}
+            add(dict(t="text", label="Wave File", v=f"{inf['warc']}/wave_{inf['index']}", ro=True))
+            add(dict(t="num", label="Sample Rate", v=inf["rate"], ro=True))
+            add(dict(t="num", label="Channels", v=inf["channels"], ro=True))
+            add(dict(t="num", label=f"Samples ({inf['frames'] / max(1, inf['rate']):.3f} s)", v=inf["frames"], ro=True))
+            add(dict(t="combo", label="Encoding", v=ENC.get(inf["encoding"], "?"), ro=True))
+            add(dict(t="check", label="Loop", v=inf["loop"], ro=True))
+            add(dict(t="num", label="Loop Start", v=inf["loop_start"], ro=True))
+            add(dict(t="num", label="Size (bytes)", v=inf["size"], ro=True))
+            add(dict(t="section", label=f"Used by {len(inf['used_by'])} instrument(s)"))
+            for u in inf["used_by"][:60]:
+                add(dict(t="text", label="", v=u, ro=True))
+            return R
         if cat == "warcs":
             w = a.warcs[i]
             add(dict(t="text", label="Name", v=w.label, ro=True))
             add(dict(t="check", label="Load Individual", v=w.extra.get("load_individual", False), ro=True))
             add(dict(t="num", label="File Id", v=w.file_id if w.file_id != INVALID else -1, ro=True))
+            try:
+                _, waves = self._warc_waves(i)
+                add(dict(t="num", label="Wave Count", v=len(waves), ro=True))
+                add(dict(t="num", label="Total Size (bytes)", v=sum(len(x) for x in waves if x), ro=True))
+            except Exception:
+                pass
             return R
         if cat == "groups":
             g = a.groups[i]
@@ -406,6 +427,95 @@ class Project:
         self.dirty = True
         return dict(ok=True, index=idx, note=f"Son Séquence {name} ajouté (label à l'offset {off})")
 
+    # ---------- BFWAR : édition des vagues (musiques/instruments) ----------
+    def _warc_waves(self, warc_idx):
+        a = self.arc
+        warc = a.warcs[warc_idx]
+        if warc.file_id not in a._warc_cache:
+            blob = a.file_bytes(warc.file_id)
+            if blob is None:
+                raise LookupError(f"Archive de vagues {warc.label} indisponible (BFGRP manquant : File > Add BFGRP)")
+            a._warc_cache[warc.file_id] = formats.split_bfwar(blob)
+        return warc, a._warc_cache[warc.file_id]
+
+    def wave_usage(self):
+        """{(warc, vague): ['BANK [programme]', ...]} : quels instruments de banque jouent chaque vague."""
+        if getattr(self, "_usage", None) is not None:
+            return self._usage
+        use = {}
+        for b in self.arc.banks:
+            blob = self.arc.file_bytes(b.file_id)
+            if blob is None:
+                continue
+            try:
+                B = Bank(blob)
+            except Exception:
+                continue
+            for ins in B.instruments:
+                for kr in ins.regions:
+                    for v in kr.velocities:
+                        use.setdefault((v.warc_id & 0xFFFFFF, v.wave_in_warc), set()).add(f"{b.label} [{ins.program}]")
+        for s in self.arc.sounds:                           # sons Wave (via BFWSD) : « Wave sound X »
+            if s.sound_type == 0x2202:
+                try:
+                    wr, wi = self.arc.wave_location(s)
+                    use.setdefault((wr.index, wi), set()).add(f"Wave sound {s.label}")
+                except Exception:
+                    pass
+        self._usage = {k: sorted(v) for k, v in use.items()}
+        return self._usage
+
+    def wave_info(self, idx):
+        warc_i, k = idx // 100000, idx % 100000
+        warc, waves = self._warc_waves(warc_i)
+        if k >= len(waves) or waves[k] is None:
+            raise LookupError("Vague inexistante")
+        inf = formats.bfwav_info(waves[k])
+        inf["warc"], inf["index"], inf["used_by"] = warc.label, k, self.wave_usage().get((warc_i, k), [])
+        return inf
+
+    def _store_warc(self, warc, new_warc):
+        self.arc.replace_any_file(warc.file_id, new_warc)
+        self.dirty = True
+        self._wavecache.clear()
+        self._usage = None
+
+    def wave_replace(self, idx, path, loop=None):
+        from .bfwar import rebuild_bfwar
+        from .wavio import wav_to_bfwav
+        warc_i, k = idx // 100000, idx % 100000
+        warc, waves = self._warc_waves(warc_i)
+        data = open(path, "rb").read() if path.lower().endswith(".bfwav") else wav_to_bfwav(path, "dspadpcm", loop)
+        self._store_warc(warc, rebuild_bfwar(self.arc.file_bytes(warc.file_id), {k: data}))
+        return dict(ok=True, note=f"Vague {k} de {warc.label} remplacée ({len(data)} octets)")
+
+    def wave_add(self, warc_i, path):
+        from .wsdwrite import append_waves_to_bfwar
+        from .wavio import wav_to_bfwav
+        warc, waves = self._warc_waves(warc_i)
+        data = open(path, "rb").read() if path.lower().endswith(".bfwav") else wav_to_bfwav(path, "dspadpcm")
+        new, (k,) = append_waves_to_bfwar(self.arc.file_bytes(warc.file_id), [data])
+        self._store_warc(warc, new)
+        return dict(ok=True, index=warc_i * 100000 + k, note=f"Vague {k} ajoutée à {warc.label}")
+
+    def wave_set_loop(self, idx, loop_start):
+        from .bfwar import rebuild_bfwar
+        warc_i, k = idx // 100000, idx % 100000
+        warc, waves = self._warc_waves(warc_i)
+        new, ls = formats.bfwav_set_loop(waves[k], loop_start)
+        self._store_warc(warc, rebuild_bfwar(self.arc.file_bytes(warc.file_id), {k: new}))
+        return dict(ok=True, note="Boucle désactivée" if loop_start is None else f"Boucle à l'échantillon {ls}")
+
+    def wave_export(self, idx, fmt):
+        warc_i, k = idx // 100000, idx % 100000
+        warc, waves = self._warc_waves(warc_i)
+        if fmt == "bfwav":
+            return f"{warc.label}_wave{k:04d}.bfwav", bytes(waves[k])
+        au = formats.decode_bfwav(waves[k])
+        bio = io.BytesIO()
+        write_wav(au, bio)
+        return f"{warc.label}_wave{k:04d}.wav", bio.getvalue()
+
     def export_wav(self, i):
         s = self.arc.sounds[i]
         data, au = self.audio_wav("sound", i)
@@ -490,6 +600,7 @@ class Project:
                 x = (x & ~(0xFF << (8 * bi))) | ((max(0, min(127 if field != "key_group" else 255, int(value))) & 0xFF) << (8 * bi))
                 struct.pack_into(e + "I", raw, addr, x)
         a.replace_any_file(bk.file_id, bytes(raw))
+        self._usage = None
         self.dirty = True
         self._wavecache.clear()
         return self.bank_view(bank)

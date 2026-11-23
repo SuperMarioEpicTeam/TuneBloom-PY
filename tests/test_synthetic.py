@@ -189,3 +189,19 @@ print("OK : BFWAR ajout / BFWSD")
 x = struct.unpack(">I", struct.pack(">I", 0x00000140))[0]
 assert (x >> 0) & 0xFF == 0x40 and (x >> 8) & 0xFF == 0x01                # DevideBy8bit(value, 0) / (value, 1)
 print("OK : champs de son")
+
+# ---- édition de boucle d'un BFWAV ----
+inf = formats.bfwav_info(wav)
+assert inf["encoding"] == 2 and inf["frames"] == 28 and inf["channels"] == 1 and not inf["loop"]
+new, ls = formats.bfwav_set_loop(wav, 14)
+i2 = formats.bfwav_info(new)
+assert i2["loop"] and i2["loop_start"] == 14 and ls == 14 and len(new) == len(wav)
+base = formats.decode_bfwav(wav); mod = formats.decode_bfwav(new)
+assert list(base.channels[0]) == list(mod.channels[0]) and mod.loop and mod.loop_start == 14      # l'audio ne change pas
+off, _ = formats.bfwav_set_loop(new, None)
+assert not formats.bfwav_info(off)["loop"]
+try:
+    formats.bfwav_set_loop(wav, 99); assert False
+except ValueError:
+    pass
+print("OK : boucle BFWAV")

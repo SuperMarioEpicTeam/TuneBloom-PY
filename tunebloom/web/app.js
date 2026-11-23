@@ -83,7 +83,7 @@ function infoBody(){
   <div class="prow"><div class="w"><div class="fld ro">0x${(S.st.version>>>0).toString(16).padStart(8,"0")}</div></div><span class="lab">Version</span></div>${S.st.dirty?'<div class="prow"><span class="lab">* Unsaved changes</span></div>':""}</div>`;
  const rows=visibleRows();
  const search=S.showSearch?`<div class="search"><input type="text" id="q" placeholder="Search..." value="${esc(S.search)}"><button class="btn" id="qa">Aa</button><button class="btn lc" id="qx">${IC.x}</button></div>`:"";
- const snd=["allsounds","stream","wave","seq"].includes(S.cat);
+ const snd=["allsounds","stream","wave","seq","wavefiles"].includes(S.cat);
  return `${search}<div class="body rows${snd?"":" plain"}" id="rows">${rows.map(r=>`<div class="r${S.sel===r.i?" sel":""}" data-i="${r.i}">${snd?`<div class="pbtn" data-p="${r.i}">${IC.play}</div><span class="ico i">${ICON_FOR[r.icon]||IC.file}</span>`:""}<span>[${r.i}]&nbsp;${esc(r.name)}</span>${S.playing&&S.playing.key===S.cat+":"+r.i?`<i class="i" style="margin-left:6px;color:#9fc">\ue1ab</i>`:""}</div>`).join("")}</div>
   ${S.cat==="stream"||(S.cat==="allsounds"&&sel1()==="stream")?tracksPane():""}`}
 function sel1(){const r=S.rows.find(r=>r.i===S.sel);return r&&r.icon}
@@ -99,11 +99,11 @@ async function openEditor(i){
  const r=S.rows.find(r=>r.i===i);if(!r)return;
  if(S.cat==="banks"){const id="bank"+i;if(!S.tabs.find(t=>t.id===id)){const d=await jget("bank?i="+i);S.tabs.push({id,type:"bank",bank:i,title:`[${i}] ${r.name}`,data:d,ins:0,reg:0})}S.tab=id;S.rtab=0}
  else if(S.cat==="bankfiles"){toast("Utilisez la catégorie Banks pour éditer une banque")}
- else if((S.cat==="seq"||S.cat==="allsounds")&&r.icon==="seq"||S.cat==="seqfiles"){const id="seq"+S.cat+i;if(!S.tabs.find(t=>t.id===id)){try{const d=await jget(`seq?kind=${S.cat==="seqfiles"?"file":"sound"}&i=${i}`);S.tabs.push({id,type:"seq",kind:S.cat==="seqfiles"?"file":"sound",i,title:`[${i}] ${r.name}`,data:d,follow:true,trail:true,edit:false,text:""})}catch(e){return toast(e.message)}}S.tab=id;S.rtab=1}
+ else if((S.cat==="seq"||S.cat==="allsounds")&&r.icon==="seq"||S.cat==="seqfiles"){const id="seq"+S.cat+i;if(!S.tabs.find(t=>t.id===id)){try{const d=await jget(`seq?kind=${S.cat==="seqfiles"?"file":"sound"}&i=${i}`);S.tabs.push({id,type:"seq",kind:S.cat==="seqfiles"?"file":"sound",i,title:`[${i}] ${r.name}`,data:d,follow:true,trail:true,edit:false,text:"",track:0,tracks:null})}catch(e){return toast(e.message)}}S.tab=id;S.rtab=1}
  drawAll(true)}
 
 /* ---------- menu contextuel (Replace / Export), comme l'original ---------- */
-const RENAMABLE=["allsounds","stream","wave","seq","allsets","wavesets","seqsets","banks","warcs","groups","players"];
+const RENAMABLE=["wavefiles","allsounds","stream","wave","seq","allsets","wavesets","seqsets","banks","warcs","groups","players"];
 async function reloadKeep(sel){S.rows=await jget("list?cat="+S.cat);S.st=await jget("state");if(sel!==undefined&&sel!==null){S.sel=sel;try{S.props=await jget(`item?cat=${S.cat}&i=${sel}`)}catch(e){}}drawAll()}
 async function doRename(i){
  const r=S.rows.find(r=>r.i===i);const n=prompt("New name (ASCII, no spaces)",r.name);if(!n||n===r.name)return;
@@ -131,14 +131,29 @@ async function addSeqFlow(){
  const name=prompt("Sound name (ASCII, no spaces)","SE_NEW_SEQUENCE");if(!name)return;
  const code="    prg 0\n    cn4 100, 24\n    wait 24\n    fin";
  try{const r=await jpost("addseq",{name,code,template:tmplFor("seq")});await afterAdd("seq",r);await openEditor(r.index);toast("Edit the MML (double-click the code), then Ctrl+S")}catch(e){toast(e.message)}}
+function ctxWave(ev,i){
+ ev.preventDefault();document.querySelectorAll(".dd.ctx").forEach(e=>e.remove());
+ const d=document.createElement("div");d.className="dd ctx";d.style.left=ev.clientX+"px";d.style.top=ev.clientY+"px";
+ d.innerHTML=`<div data-a="wreplace">Replace</div><div data-a="wexport">Export WAV</div><div data-a="wexportraw">Export BFWAV</div><div data-a="wloop">Edit loop…</div>`;document.body.appendChild(d);
+ const refresh=async m=>{S.st=await jget("state");S.sel=i;S.props=await jget(`item?cat=wavefiles&i=${i}`);drawAll();if(m)toast(m)};
+ d.onclick=async e=>{const a=e.target.dataset.a;d.remove();
+  const dl=f=>{const l=document.createElement("a");l.href=`/api/waveexport?i=${i}&fmt=${f}`;l.download="";document.body.appendChild(l);l.click();l.remove()};
+  if(a==="wexport")dl("wav");if(a==="wexportraw")dl("bfwav");
+  if(a==="wloop"){const v=prompt("Loop start (sample index; empty = no loop)","");if(v===null)return;
+   try{const r=await jpost("waveloop",{i,loop:v.trim()===""?null:parseInt(v)});await refresh(r.note)}catch(er){toast(er.message)}}
+  if(a==="wreplace")pathDialog("Replace wave with (.wav / .bfwav)","",async p=>{let loop=null;if(/\.wav$/i.test(p)){const v=prompt("Loop start (sample index, empty = no loop)","");if(v!==null&&v.trim()!=="")loop=parseInt(v)}
+   toast("Encoding…");try{const r=await jpost("wavereplace",{i,path:p,loop});await refresh(r.note)}catch(er){toast(er.message)}})};
+ setTimeout(()=>document.addEventListener("click",()=>d.remove(),{once:true}),0)}
 function ctxMenu(ev,i){
  ev.preventDefault();document.querySelectorAll(".dd.ctx").forEach(e=>e.remove());
  const snd=["allsounds","stream","wave","seq"].includes(S.cat);
- const items=[["rename","Rename"]].concat(snd?[["duplicate","Duplicate"],["replace","Replace"],["export","Export"],["delete","Delete"]]:[]);
+ if(S.cat==="wavefiles"){ctxWave(ev,i);return}
+ const items=[["rename","Rename"]].concat(S.cat==="warcs"?[["waveadd","Add Wave…"]]:[]).concat(snd?[["duplicate","Duplicate"],["replace","Replace"],["export","Export"],["delete","Delete"]]:[]);
  const d=document.createElement("div");d.className="dd ctx";d.style.left=ev.clientX+"px";d.style.top=ev.clientY+"px";
  d.innerHTML=items.map(([k,l])=>`<div data-a="${k}">${l}</div>`).join("");document.body.appendChild(d);
  d.onclick=async e=>{const a=e.target.dataset.a;d.remove();
   if(a==="rename")doRename(i);if(a==="duplicate")doDuplicate(i);
+  if(a==="waveadd")pathDialog("Add wave to archive (.wav / .bfwav)","",async p=>{toast("Encoding…");try{const r=await jpost("waveadd",{warc:i,path:p});S.st=await jget("state");S.props=await jget(`item?cat=warcs&i=${i}`);drawAll();toast(r.note)}catch(e){toast(e.message)}});
   if(a==="delete"){const r=S.rows.find(r=>r.i===i);if(confirm("Delete sound "+r.name+" ?\nLater sounds are renumbered; its audio file stays in the archive."))
    try{const x=await jpost("delete",{i});S.sel=null;S.props=[];S.rows=await jget("list?cat="+S.cat);S.st=await jget("state");drawAll();toast("Deleted "+x.name)}catch(e){toast(e.message)}}
   if(a==="export"){const l=document.createElement("a");l.href="/api/export?i="+i;l.download="";document.body.appendChild(l);l.click();l.remove()}
@@ -227,7 +242,7 @@ function seqBody(){
  const combo=(v,l,extra="")=>`<div class="crow"><div class="fld ro" style="flex:1">${esc(v)}</div><div class="btn">▼</div><div class="btn">◀</div><div class="btn">▶</div><span class="lab" style="width:60px">${l}</span>${extra}</div>`;
  let h=`<div class="body ed" style="display:flex;flex-direction:column;overflow:hidden"><div class="opts" style="padding:6px 8px 0"><div style="color:#cfd;margin-bottom:6px">Options</div>${d.banks.map((b,i)=>combo(b,"Bank "+i,`<div class="btn lc">${IC.file}</div>`)).join("")}
  <div class="crow"><div class="fld ro" style="flex:1">${esc(d.start_label)}</div><div class="btn">▼</div><span class="lab">Start Label</span></div>
- <div class="mmlbar" style="padding:2px 0"><div class="pbtn" style="width:28px;height:28px" id="seqplay">${IC.play}</div><div class="btn lc" id="seqapply" title="Compile & apply (Ctrl+S)" style="width:28px;height:28px;${t.edit?"background:#3d8f4f":""}">${IC.save}</div><div class="chk" style="width:24px;height:24px;font-size:15px">${t.follow?IC.check:""}</div><span>Follow</span><div class="fld ro" style="flex:1;height:28px">Track 4</div><div class="btn">▼</div><span>Track</span><div class="chk" style="width:24px;height:24px;font-size:15px">${t.trail?IC.check:""}</div><span>Trail</span></div></div>`;
+ <div class="mmlbar" style="padding:2px 0"><div class="pbtn" style="width:28px;height:28px" id="seqplay">${IC.play}</div><div class="btn lc" id="seqapply" title="Compile & apply (Ctrl+S)" style="width:28px;height:28px;${t.edit?"background:#3d8f4f":""}">${IC.save}</div><div class="chk" id="chkfollow" style="width:24px;height:24px;font-size:15px;cursor:pointer">${t.follow?IC.check:""}</div><span>Follow</span><select id="trksel" class="f" style="flex:1;height:28px;padding:0 6px">${(t.tracks||Array.from({length:16},(_,k)=>k)).map(k=>`<option value="${k}" ${k===t.track?"selected":""}>Track ${k}</option>`).join("")}</select><span>Track</span><div class="chk" id="chktrail" style="width:24px;height:24px;font-size:15px;cursor:pointer">${t.trail?IC.check:""}</div><span>Trail</span></div></div>`;
  if(t.edit)return h+`<textarea id="mml" class="code" spellcheck="false" style="border:0;outline:0;resize:none;background:var(--bg);color:#e6e6ea;font:inherit;line-height:20px;padding:0 0 0 12px;white-space:pre;tab-size:4">${esc(t.text)}</textarea></div>`;
  h+=`<div class="code" id="code">${d.lines.map((l,n)=>l.k==="label"?`<div class="ln lbl"><span class="n"></span><span class="lbl2">${esc(l.t)}</span></div>`:`<div class="ln" data-o="${l.o}"><span class="n">${l.o}</span><span class="kw"><span class="sp">\u00b7\u00b7\u00b7\u00b7</span>${hl(l.t)}</span></div>`).join("")}</div></div>`;return h}
 function seqText(d){return d.lines.map(l=>l.k==="label"?l.t:"    "+l.t).join("\n")}
@@ -237,6 +252,9 @@ async function seqApply(t){
   if(r.warnings&&r.warnings.length)toast(r.warnings.join("\n"));else toast("Séquence compilée et appliquée");drawAll()}
  catch(e){const m=/ligne (\d+)/.exec(e.message);toast(e.message);if(m){const n=+m[1]-1,lines=ta.value.split("\n");let pos=0;for(let k=0;k<n;k++)pos+=lines[k].length+1;ta.focus();ta.setSelectionRange(pos,pos+(lines[n]||"").length);ta.scrollTop=Math.max(0,(n-5)*20)}}}
 function bindSeq(){const b=$("seqplay");if(!b)return;const t=S.tabs.find(t=>t.id===S.tab);
+ const ts=$("trksel");if(ts)ts.onchange=()=>{t.track=+ts.value};
+ const cf=$("chkfollow");if(cf)cf.onclick=()=>{t.follow=!t.follow;cf.textContent=t.follow?IC.check:""};
+ const ctl=$("chktrail");if(ctl)ctl.onclick=()=>{t.trail=!t.trail;ctl.textContent=t.trail?IC.check:""};
  const ap=$("seqapply");if(ap)ap.onclick=()=>{if(t.edit)seqApply(t);else{t.edit=true;t.text=seqText(t.data);drawCenter()}};
  const code=$("code");if(code)code.ondblclick=()=>{t.edit=true;t.text=seqText(t.data);drawCenter();const ta=$("mml");if(ta)ta.focus()};
  const ta=$("mml");if(ta){ta.onkeydown=ev=>{if((ev.ctrlKey||ev.metaKey)&&ev.key==="s"){ev.preventDefault();seqApply(t)}if(ev.key==="Tab"){ev.preventDefault();const s0=ta.selectionStart;ta.setRangeText("    ",s0,ta.selectionEnd,"end")}if(ev.key==="Escape"){t.edit=false;drawCenter()}}}
@@ -253,7 +271,22 @@ function drawPlayer(){
  $("bar").onclick=ev=>{if(a.duration){const r=$("bar").getBoundingClientRect();a.currentTime=a.duration*(ev.clientX-r.left)/r.width}}}
 async function play(key,i,kind){
  const a=A();try{const k=kind||(S.cat==="wavefiles"?"wavefile":"sound");
-  const r=await api(`audio?kind=${k}&i=${i}`);const blob=await r.blob();S.loop=(r.headers.get("X-Loop")||"").split(",").map(parseFloat).filter(x=>!isNaN(x));a.src=URL.createObjectURL(blob);await a.play();S.playing={key};drawPlayer();drawCenter()}catch(e){toast(e.message)}}
+  const r=await api(`audio?kind=${k}&i=${i}`);const blob=await r.blob();if(k==="sound")loadTrace(i);S.loop=(r.headers.get("X-Loop")||"").split(",").map(parseFloat).filter(x=>!isNaN(x));a.src=URL.createObjectURL(blob);await a.play();S.playing={key};drawPlayer();drawCenter()}catch(e){toast(e.message)}}
+async function loadTrace(i){
+ S.trace=null;try{const d=await jget(`trace?kind=sound&i=${i}`);if(!d.trace.length)return;const by={};
+  for(const [t,k,o] of d.trace){(by[k]||(by[k]={t:[],o:[]})).t.push(t);by[k].o.push(o)}S.trace={by,tracks:d.tracks};
+  const tab=S.tabs.find(x=>x.id===S.tab);if(tab&&tab.type==="seq"){tab.tracks=d.tracks;if(!d.tracks.includes(tab.track))tab.track=d.tracks[0];const sel=$("trksel");
+   if(sel)sel.innerHTML=d.tracks.map(k=>`<option value="${k}" ${k===tab.track?"selected":""}>Track ${k}</option>`).join("")}}catch(e){S.trace=null}}
+function followTick(){
+ try{const tab=S.tabs.find(x=>x.id===S.tab),a=A();
+  if(tab&&tab.type==="seq"&&!tab.edit&&S.trace&&!a.paused){const code=$("code"),bt=S.trace.by[tab.track];
+   if(code&&bt){const now=a.currentTime;let lo=0,hi=bt.t.length;while(lo<hi){const m=(lo+hi)>>1;if(bt.t[m]<=now)lo=m+1;else hi=m}
+    const last=lo-1;const win=tab.trail?1.0:0.0;let first=last;while(first>0&&bt.t[first-1]>=now-win)first--;
+    const on=new Set(),cur=last>=0?bt.o[last]:-1;for(let k=Math.max(0,first);k<=last;k++)on.add(bt.o[k]);
+    code.querySelectorAll(".ln[data-o]").forEach(e=>{const o=+e.dataset.o;e.classList.toggle("cur",o===cur);e.classList.toggle("trail",o!==cur&&on.has(o))});
+    if(tab.follow&&cur>=0){const el=code.querySelector(`.ln[data-o="${cur}"]`);if(el){const y=el.offsetTop-code.clientHeight/2;if(Math.abs(code.scrollTop-y)>code.clientHeight*0.35)code.scrollTop=y}}}}}catch(e){}
+ requestAnimationFrame(followTick)}
+requestAnimationFrame(followTick);
 A().addEventListener("timeupdate",()=>{const a=A();const f=$("fill");if(f){f.style.width=(a.duration?100*a.currentTime/a.duration:0)+"%";$("tcur").textContent=fmt(a.currentTime);$("ttot").textContent=fmt(a.duration)}});
 A().addEventListener("ended",()=>{S.playing=null;drawPlayer();drawCenter()});
 A().addEventListener("pause",drawPlayer);A().addEventListener("play",drawPlayer);
